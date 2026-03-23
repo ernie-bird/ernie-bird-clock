@@ -43,18 +43,21 @@
     #controls button:hover {
       background: rgba(255,255,255,0.06);
     }
-    #controls .label {
+    #tapHint {
       color: #a8b3c7;
       user-select: none;
       white-space: nowrap;
+    }
+    #tapHint.hidden {
+      display: none;
     }
   </style>
 </head>
 <body>
   <div id="controls">
-    <button id="muteBtn" type="button">Mute</button>
-    <button id="exitBtn" type="button">Exit / Q</button>
-    <div class="label" id="statusLabel">[m] mute: OFF   [q] exit</div>
+    <button id="muteBtn" type="button">Mute (m)</button>
+    <button id="exitBtn" type="button">Exit (esc)</button>
+    <div id="tapHint">tap for sound</div>
   </div>
 
   <canvas id="screen"></canvas>
@@ -63,46 +66,51 @@
 (() => {
   const canvas = document.getElementById("screen");
   const ctx = canvas.getContext("2d");
+
   const muteBtn = document.getElementById("muteBtn");
   const exitBtn = document.getElementById("exitBtn");
-  const statusLabel = document.getElementById("statusLabel");
+  const tapHint = document.getElementById("tapHint");
 
   let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
   let cellW = 12, cellH = 20, cols = 80, rows = 30;
 
   const BACKGROUND = "#000814";
-  const STATUS_COLOR = "#a8b3c7";
 
   let muted = false;
   let lastError = null;
 
-  // Terminal-like world tick: 8 Hz
-  const TICK_MS = 125;
+  const TICK_MS = 125; // 8 Hz terminal-like simulation
   let lastFrameTime = performance.now();
   let accumulator = 0;
 
-  // Exit overlay state
   let exitOverlay = false;
   let exitCountdown = 10.0;
 
-  // Audio
   let audioCtx = null;
+  let audioReady = false;
   let lastTriangleBeep = 0;
   let lastCircleBeep = 0;
 
-  function setStatus() {
-    statusLabel.textContent = `[m] mute: ${muted ? "ON" : "OFF"}   [q] exit`;
-    muteBtn.textContent = muted ? "Unmute" : "Mute";
+  function updateButtons() {
+    muteBtn.textContent = muted ? "Unmute (m)" : "Mute (m)";
   }
 
-  function ensureAudio() {
+  function markAudioReady() {
+    audioReady = true;
+    tapHint.classList.add("hidden");
+  }
+
+  async function ensureAudio() {
     try {
       if (!audioCtx) {
         const AC = window.AudioContext || window.webkitAudioContext;
         if (AC) audioCtx = new AC();
       }
       if (audioCtx && audioCtx.state === "suspended") {
-        audioCtx.resume();
+        await audioCtx.resume();
+      }
+      if (audioCtx && audioCtx.state === "running") {
+        markAudioReady();
       }
     } catch (e) {
       console.warn("Audio init/resume failed:", e);
@@ -111,7 +119,6 @@
 
   function playTone(freq = 440, duration = 0.05, volume = 0.03) {
     if (muted) return;
-    ensureAudio();
     if (!audioCtx || audioCtx.state !== "running") return;
 
     const now = audioCtx.currentTime;
@@ -219,7 +226,6 @@
     if (!words.length) return [""];
     const lines = [];
     let cur = words[0];
-
     for (let i = 1; i < words.length; i++) {
       const cand = cur + " " + words[i];
       if (bitmapLineWidth(cand, scale) <= maxCols) cur = cand;
@@ -381,7 +387,7 @@
     }
   }
 
-  function updateTriangles(w, h, cx, cy, radius) {
+  function updateTriangles(w, h, cx, cy, radiusPx) {
     for (const t of triangles) {
       if (Math.random() < 0.22) {
         t.vx = [-1, 0, 1][Math.floor(Math.random() * 3)];
@@ -411,16 +417,16 @@
     }
 
     for (const t of triangles) {
-      const dx = (t.x - cx) / 2;
-      const dy = (t.y - cy);
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const onRingNow = Math.abs(dist - radius) < 0.7;
+      const dxPx = (t.x - cx) * cellW;
+      const dyPx = (t.y - cy) * cellH;
+      const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
+      const onRingNow = Math.abs(distPx - radiusPx) < Math.max(cellW, cellH) * 0.75;
 
       if (onRingNow && !t.onRing) {
         beepCircle();
-        const ang = Math.atan2(dy, dx || 0.0001);
+        const ang = Math.atan2(dyPx, dxPx || 0.0001);
         t.vx = Math.round(Math.cos(ang) * 2) || (Math.random() < 0.5 ? -1 : 1);
-        t.vy = Math.round(Math.sin(ang)) || (Math.random() < 0.5 ? -1 : 1);
+        t.vy = Math.round(Math.sin(ang) * 1) || (Math.random() < 0.5 ? -1 : 1);
       }
       t.onRing = onRingNow;
     }
@@ -474,7 +480,6 @@
     const text = pick(kind === "blue" ? blueOptions : wakeOptions);
     const color = lightMessageColor(kind);
     const chosen = chooseMessageSize(text);
-
     const candidates = [];
 
     if (chosen.size === 1) {
@@ -592,17 +597,20 @@
     const now = new Date();
     const cx = Math.floor(cols / 2);
     const cy = Math.floor(rows / 2);
-    const radius = Math.max(6, Math.min(Math.floor((cols - 12) / 4), Math.floor((rows - 8) / 2)));
+    const radiusPx = Math.max(
+      40,
+      Math.min((cols - 12) * cellW / 2, (rows - 8) * cellH / 2)
+    );
 
     const sec = now.getSeconds() + now.getMilliseconds() / 1000;
     const secA = sec / 60 * 2 * Math.PI - Math.PI / 2;
 
-    const tipX = Math.floor(cx + Math.cos(secA) * radius * 2.1);
-    const tipY = Math.floor(cy + Math.sin(secA) * radius * 1.05);
+    const tipX = Math.floor(cx + (Math.cos(secA) * radiusPx) / cellW);
+    const tipY = Math.floor(cy + (Math.sin(secA) * radiusPx) / cellH);
     secondTrail.push([tipX, tipY]);
     while (secondTrail.length > 5) secondTrail.shift();
 
-    updateTriangles(cols, rows, cx, cy, radius);
+    updateTriangles(cols, rows, cx, cy, radiusPx);
   }
 
   function renderClock() {
@@ -611,7 +619,10 @@
     const now = new Date();
     const cx = Math.floor(cols / 2);
     const cy = Math.floor(rows / 2);
-    const radius = Math.max(6, Math.min(Math.floor((cols - 12) / 4), Math.floor((rows - 8) / 2)));
+    const radiusPx = Math.max(
+      40,
+      Math.min((cols - 12) * cellW / 2, (rows - 8) * cellH / 2)
+    );
 
     const sec = now.getSeconds() + now.getMilliseconds() / 1000;
     const minute = now.getMinutes() + sec / 60;
@@ -625,31 +636,43 @@
     const minuteColor = pick(LIGHT_TEXT);
     const hourColor = pick(LIGHT_TEXT);
 
+    const hourLenPx = radiusPx * 0.50;
+    const minuteLenPx = radiusPx * 0.84;
+    const secondLenPx = radiusPx * 1.08;
+
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
-        const dx = (x - cx) / 2;
-        const dy = (y - cy);
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const ang = Math.atan2(dy, dx);
+        const dxPx = (x - cx) * cellW;
+        const dyPx = (y - cy) * cellH;
+        const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
+        const ang = Math.atan2(dyPx, dxPx);
 
-        if (Math.abs(dist - radius) < 0.45) put(y, x, "o", circleColor);
-        if (dist < radius * 0.50 && angleDiff(ang, hourA) < 0.13) put(y, x, "#", hourColor);
-        if (dist < radius * 0.84 && angleDiff(ang, minA) < 0.09) put(y, x, "|", minuteColor);
-        if (dist < radius * 1.08 && angleDiff(ang, secA) < 0.08) put(y, x, pick(["*","+","•","✦","✧","."]), pick(SPARKLE));
+        if (Math.abs(distPx - radiusPx) < Math.max(cellW, cellH) * 0.45) {
+          put(y, x, "o", circleColor);
+        }
+        if (distPx < hourLenPx && angleDiff(ang, hourA) < 0.13) {
+          put(y, x, "#", hourColor);
+        }
+        if (distPx < minuteLenPx && angleDiff(ang, minA) < 0.09) {
+          put(y, x, "|", minuteColor);
+        }
+        if (distPx < secondLenPx && angleDiff(ang, secA) < 0.08) {
+          put(y, x, pick(["*", "+", "•", "✦", "✧", "."]), pick(SPARKLE));
+        }
       }
     }
 
     for (let i = 0; i < secondTrail.length; i++) {
       const [tx, ty] = secondTrail[i];
       for (let dx = -1; dx <= 1; dx++) {
-        put(ty, tx + dx, pick(["·","•",".","⋆"]), ["#ffffff","#f5f5f5","#e5e5e5","#d4d4d4","#c4c4c4"][i] || "#ffffff");
+        put(ty, tx + dx, pick(["·", "•", ".", "⋆"]), ["#ffffff", "#f5f5f5", "#e5e5e5", "#d4d4d4", "#c4c4c4"][i] || "#ffffff");
       }
     }
 
     put(cy, cx, "●", "#ff4d4d");
 
     for (const t of triangles) {
-      put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
+      put(t.y, t.x, t.glyph, pick(["#ffd166", "#f8fafc", "#dbeafe", "#e9d5ff", "#fbcfe8"]));
     }
 
     for (const msg of messages) {
@@ -693,7 +716,7 @@
 
   muteBtn.addEventListener("click", () => {
     muted = !muted;
-    setStatus();
+    updateButtons();
   });
 
   exitBtn.addEventListener("click", () => {
@@ -702,10 +725,12 @@
 
   window.addEventListener("keydown", (e) => {
     ensureAudio();
-    if (e.key.toLowerCase() === "m") {
+    const k = e.key.toLowerCase();
+
+    if (k === "m") {
       muted = !muted;
-      setStatus();
-    } else if (e.key.toLowerCase() === "q") {
+      updateButtons();
+    } else if (e.key === "Escape") {
       triggerExitOverlay();
     }
   });
@@ -715,7 +740,7 @@
   window.addEventListener("mousedown", ensureAudio, { once: true });
 
   initTriangles();
-  setStatus();
+  updateButtons();
   requestAnimationFrame(frame);
 })();
 </script>

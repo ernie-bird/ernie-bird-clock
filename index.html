@@ -119,6 +119,10 @@
   const secondTrail = [];
   const messages = [];
   const triangles = [];
+  const messageCooldowns = new Map();
+
+  const MESSAGE_REPEAT_COOLDOWN_MS = 18000;
+  const MAX_OVERLAP_MS = 500;
 
   const LIGHT_TEXT = ["#f7f9fb", "#f5f7fa", "#eef2f7", "#ffffff", "#f0f8ff", "#fff7d6", "#dff6ff", "#e8f1ff"];
   const SPARKLE = ["#ffffff", "#fff8cc", "#ffe066", "#9bf6ff", "#bdb2ff", "#a0e7e5", "#f1fa8c"];
@@ -128,6 +132,13 @@
 
   function pick(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  function pickMessageWithCooldown(options, nowMs) {
+    const available = options.filter(text => (messageCooldowns.get(text) || 0) <= nowMs);
+    const chosen = pick(available.length ? available : options);
+    messageCooldowns.set(chosen, nowMs + MESSAGE_REPEAT_COOLDOWN_MS + Math.random() * 6000);
+    return chosen;
   }
 
   function lightMessageColor(kind = "wake") {
@@ -275,22 +286,22 @@
     const filter = audioCtx.createBiquadFilter();
 
     osc.type = "triangle";
-    osc.frequency.setValueAtTime(1400 + Math.random() * 1000, now);
-    osc.frequency.exponentialRampToValueAtTime(2200 + Math.random() * 1800, now + 0.06);
+    osc.frequency.setValueAtTime(1400 + Math.random() * 800, now);
+    osc.frequency.exponentialRampToValueAtTime(2200 + Math.random() * 1200, now + 0.08);
 
     filter.type = "highpass";
     filter.frequency.setValueAtTime(1200, now);
 
     gain.gain.setValueAtTime(0.0001, now);
-    gain.gain.exponentialRampToValueAtTime(0.02, now + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+    gain.gain.exponentialRampToValueAtTime(0.02, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.14);
 
     osc.connect(filter);
     filter.connect(gain);
     gain.connect(masterGain);
 
     osc.start(now);
-    osc.stop(now + 0.12);
+    osc.stop(now + 0.15);
   }
 
   function beepFreeze() {
@@ -512,24 +523,23 @@
       const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
 
       let alpha;
-      if (lifeRatio > 0.66) alpha = 1.0;
-      else if (lifeRatio > 0.33) alpha = 0.75;
-      else alpha = 0.42;
+      if (lifeRatio > 0.72) alpha = 1.0;
+      else if (lifeRatio > 0.42) alpha = 0.82;
+      else alpha = 0.56;
 
-      const blink = 0.82 + 0.18 * Math.sin(t + p.blinkOffset);
+      const blink = 0.86 + 0.14 * Math.sin(t + p.blinkOffset);
       ctx.globalAlpha = alpha * blink;
-
       ctx.fillStyle = p.color;
       ctx.fillText(p.glyph, p.gx, p.gy);
 
-      if (lifeRatio > 0.55 && Math.random() < 0.28) {
-        ctx.globalAlpha = alpha * 0.35;
+      if (lifeRatio > 0.50 && Math.random() < 0.18) {
+        ctx.globalAlpha = alpha * 0.30;
         ctx.fillText(pick([".", "·", ":"]), p.gx - GLITTER_CELL_W, p.gy);
       }
 
-      if (lifeRatio > 0.45 && Math.random() < 0.22) {
-        ctx.globalAlpha = alpha * 0.28;
-        ctx.fillText(pick([".", "·", ":"]), p.gx, p.gy - GLITTER_CELL_H);
+      if (lifeRatio > 0.50 && Math.random() < 0.18) {
+        ctx.globalAlpha = alpha * 0.30;
+        ctx.fillText(pick([".", "·", ":"]), p.gx + GLITTER_CELL_W, p.gy);
       }
     }
 
@@ -689,56 +699,77 @@
   }
 
   function spawnMessage(kind) {
-    const text = pick(kind === "blue" ? blueOptions : wakeOptions);
+    const nowMs = performance.now();
+    const text = pickMessageWithCooldown(kind === "blue" ? blueOptions : wakeOptions, nowMs);
     const color = lightMessageColor(kind);
     const chosen = chooseMessageSize(text);
+
     const candidates = [];
+    const overlapCandidates = [];
 
     if (chosen.size === 1) {
       const w = text.length, h = 1;
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 16; i++) {
         const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
         const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        candidates.push({ row, col, box: buildBox(row, col, w, h, 1), lines: null, size: 1 });
+        const box = buildBox(row, col, w, h, 1);
+        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
+        const candidate = { row, col, box, lines: null, size: 1, overlapping };
+        if (!overlapping.length) candidates.push(candidate);
+        else overlapCandidates.push(candidate);
       }
     } else {
       const { size, lines, w, h } = chosen;
-      for (let i = 0; i < 12; i++) {
+      for (let i = 0; i < 16; i++) {
         const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
         const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        candidates.push({ row, col, box: buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2))), lines, size });
+        const box = buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2)));
+        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
+        const candidate = { row, col, box, lines, size, overlapping };
+        if (!overlapping.length) candidates.push(candidate);
+        else overlapCandidates.push(candidate);
       }
     }
 
-    for (const cand of candidates) {
-      let hit = false;
-      for (const msg of messages) {
-        if (boxOverlap(cand.box, msg.box)) {
-          hit = true;
-          break;
-        }
-      }
-      if (!hit) {
-        messages.push({
-          kind,
-          text,
-          color,
-          size: cand.size,
-          lines: cand.lines,
-          row: cand.row,
-          col: cand.col,
-          box: cand.box,
-          ttl: kind === "blue" ? 10 + Math.floor(Math.random() * 12) : 12 + Math.floor(Math.random() * 14)
-        });
-        return;
+    const chosenCandidate = candidates.length ? pick(candidates) : (overlapCandidates.length ? pick(overlapCandidates) : null);
+    if (!chosenCandidate) return;
+
+    const msg = {
+      kind,
+      text,
+      color,
+      size: chosenCandidate.size,
+      lines: chosenCandidate.lines,
+      row: chosenCandidate.row,
+      col: chosenCandidate.col,
+      box: chosenCandidate.box,
+      ttl: kind === "blue" ? 10 + Math.floor(Math.random() * 12) : 12 + Math.floor(Math.random() * 14),
+      overlapExpireAt: null
+    };
+
+    if (chosenCandidate.overlapping.length) {
+      msg.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
+      for (const other of chosenCandidate.overlapping) {
+        other.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
       }
     }
+
+    messages.push(msg);
   }
 
   function updateMessagesTick() {
+    const nowMs = performance.now();
+
+    for (const [key, until] of messageCooldowns.entries()) {
+      if (until <= nowMs) messageCooldowns.delete(key);
+    }
+
     for (let i = messages.length - 1; i >= 0; i--) {
-      messages[i].ttl--;
-      if (messages[i].ttl <= 0) messages.splice(i, 1);
+      const msg = messages[i];
+      msg.ttl--;
+      if ((msg.overlapExpireAt && nowMs >= msg.overlapExpireAt) || msg.ttl <= 0) {
+        messages.splice(i, 1);
+      }
     }
 
     if (!exitOverlay) {
@@ -805,17 +836,18 @@
     const sx = snapGlitterX(px);
     const sy = snapGlitterY(py);
 
-    const count = Math.floor(14 + Math.random() * 18 * intensity);
+    const count = Math.floor(16 + Math.random() * 14 * intensity);
 
     for (let i = 0; i < count; i++) {
       const ang = Math.random() * Math.PI * 2;
-      const speedX = (0.6 + Math.random() * 2.8) * (Math.random() < 0.5 ? -1 : 1);
-      const speedY = (0.4 + Math.random() * 2.2) * (Math.random() < 0.5 ? -1 : 1);
-      const maxLife = 0.45 + Math.random() * 0.9;
+      const tightness = Math.random() < 0.72 ? 0.55 : 1.0;
+      const speedX = (0.18 + Math.random() * 1.1) * tightness * (Math.random() < 0.5 ? -1 : 1);
+      const speedY = (0.12 + Math.random() * 0.9) * tightness * (Math.random() < 0.5 ? -1 : 1);
+      const maxLife = 0.95 + Math.random() * 1.35;
 
       glitterParticles.push({
-        x: sx,
-        y: sy,
+        x: sx + (Math.random() < 0.65 ? 0 : (Math.random() < 0.5 ? -GLITTER_CELL_W : GLITTER_CELL_W) * 0.25),
+        y: sy + (Math.random() < 0.65 ? 0 : (Math.random() < 0.5 ? -GLITTER_CELL_H : GLITTER_CELL_H) * 0.25),
         gx: sx,
         gy: sy,
         vx: Math.cos(ang) * speedX,
@@ -836,19 +868,19 @@
 
     for (let i = glitterParticles.length - 1; i >= 0; i--) {
       const p = glitterParticles[i];
-
       p.life -= dt;
+
       if (p.life <= 0) {
         glitterParticles.splice(i, 1);
         continue;
       }
 
-      p.vx *= 0.965;
-      p.vy *= 0.965;
+      p.vx *= 0.972;
+      p.vy *= 0.972;
 
-      p.vy += 0.12 * dt;
-      p.x += p.vx * GLITTER_CELL_W * 0.9;
-      p.y += p.vy * GLITTER_CELL_H * 0.9;
+      p.vy += 0.045 * dt;
+      p.x += p.vx * GLITTER_CELL_W * 0.55;
+      p.y += p.vy * GLITTER_CELL_H * 0.55;
 
       p.gx = snapGlitterX(p.x);
       p.gy = snapGlitterY(p.y);
@@ -1028,7 +1060,7 @@
     pointerX = p.x;
     pointerY = p.y;
     lastPointerSpawn = performance.now();
-    spawnGlitterBurst(pointerX, pointerY, 1.6);
+    spawnGlitterBurst(pointerX, pointerY, 1.5);
   }
 
   function handlePointerMove(e) {
@@ -1041,7 +1073,7 @@
     const now = performance.now();
     if (now - lastPointerSpawn >= 1000 / GLITTER_HZ) {
       lastPointerSpawn = now;
-      spawnGlitterBurst(pointerX, pointerY, 0.55);
+      spawnGlitterBurst(pointerX, pointerY, 0.42);
     }
   }
 

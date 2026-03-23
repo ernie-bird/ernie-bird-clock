@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Clock</title>
+  <style>
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      background: #000814;
+      overflow: hidden;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+      background: #000814;
+    }
+  </style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById("screen");
+  const ctx = canvas.getContext("2d");
+
+  let W = 0, H = 0, DPR = Math.max(1, window.devicePixelRatio || 1);
+  let cellW = 12, cellH = 20, cols = 80, rows = 30;
+
+  const BACKGROUND = "#000814";
+  const STATUS_COLOR = "#a8b3c7";
+
+  let running = true;
+  let muted = false;
+  let exitArmed = false;
+  let hardStopped = false;
+
+  // -------- audio --------
+  let audioCtx = null;
+  let lastTriangleBeep = 0;
+  let lastCircleBeep = 0;
+
+  function ensureAudio() {
+    if (!audioCtx) {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    }
+    if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+  }
+
+  function playTone(freq = 440, duration = 0.05, volume = 0.03) {
+    if (muted) return;
+    ensureAudio();
+    if (!audioCtx) return;
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(volume, now + 0.005);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + duration + 0.01);
+  }
+
+  function beepTriangle() {
+    const t = performance.now();
+    if (t - lastTriangleBeep < 50) return;
+    lastTriangleBeep = t;
+    playTone(880, 0.045, 0.025);
+  }
+
+  function beepCircle() {
+    const t = performance.now();
+    if (t - lastCircleBeep < 40) return;
+    lastCircleBeep = t;
+    playTone(540, 0.05, 0.02);
+  }
+
+  // -------- palette --------
+  const LIGHT_TEXT = ["#f7f9fb","#f5f7fa","#eef2f7","#ffffff","#f0f8ff","#fff7d6","#dff6ff","#e8f1ff"];
+  const SPARKLE = ["#ffffff","#fff8cc","#ffe066","#9bf6ff","#bdb2ff","#a0e7e5","#f1fa8c"];
+  const BLUE_MSG = ["#7dd3fc","#67e8f9","#93c5fd","#a5f3fc","#bfdbfe","#c4b5fd"];
+  const WAKE_MSG = ["#ffffff","#f8fafc","#fde68a","#fef3c7","#d1fae5","#e9d5ff","#fbcfe8"];
+
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+
+  // -------- bitmap font --------
+  const FONT = {
+    "A":["01110","10001","10001","11111","10001","10001","10001"],
+    "B":["11110","10001","10001","11110","10001","10001","11110"],
+    "C":["01111","10000","10000","10000","10000","10000","01111"],
+    "D":["11110","10001","10001","10001","10001","10001","11110"],
+    "E":["11111","10000","10000","11110","10000","10000","11111"],
+    "F":["11111","10000","10000","11110","10000","10000","10000"],
+    "G":["01111","10000","10000","10111","10001","10001","01111"],
+    "H":["10001","10001","10001","11111","10001","10001","10001"],
+    "I":["11111","00100","00100","00100","00100","00100","11111"],
+    "J":["00001","00001","00001","00001","10001","10001","01110"],
+    "K":["10001","10010","10100","11000","10100","10010","10001"],
+    "L":["10000","10000","10000","10000","10000","10000","11111"],
+    "M":["10001","11011","10101","10101","10001","10001","10001"],
+    "N":["10001","11001","10101","10011","10001","10001","10001"],
+    "O":["01110","10001","10001","10001","10001","10001","01110"],
+    "P":["11110","10001","10001","11110","10000","10000","10000"],
+    "Q":["01110","10001","10001","10001","10101","10010","01101"],
+    "R":["11110","10001","10001","11110","10100","10010","10001"],
+    "S":["01111","10000","10000","01110","00001","00001","11110"],
+    "T":["11111","00100","00100","00100","00100","00100","00100"],
+    "U":["10001","10001","10001","10001","10001","10001","01110"],
+    "V":["10001","10001","10001","10001","10001","01010","00100"],
+    "W":["10001","10001","10001","10101","10101","10101","01010"],
+    "X":["10001","10001","01010","00100","01010","10001","10001"],
+    "Y":["10001","10001","01010","00100","00100","00100","00100"],
+    "Z":["11111","00001","00010","00100","01000","10000","11111"],
+    "0":["01110","10001","10011","10101","11001","10001","01110"],
+    "1":["00100","01100","00100","00100","00100","00100","01110"],
+    "2":["01110","10001","00001","00010","00100","01000","11111"],
+    "3":["11110","00001","00001","01110","00001","00001","11110"],
+    "4":["00010","00110","01010","10010","11111","00010","00010"],
+    "5":["11111","10000","10000","11110","00001","00001","11110"],
+    "6":["01110","10000","10000","11110","10001","10001","01110"],
+    "7":["11111","00001","00010","00100","01000","01000","01000"],
+    "8":["01110","10001","10001","01110","10001","10001","01110"],
+    "9":["01110","10001","10001","01111","00001","00001","01110"],
+    "!":["00100","00100","00100","00100","00100","00000","00100"],
+    "?":["01110","10001","00001","00010","00100","00000","00100"],
+    ".":["00000","00000","00000","00000","00000","00000","00100"],
+    ":":["00000","00100","00000","00000","00100","00000","00000"],
+    "'":["00100","00100","00000","00000","00000","00000","00000"],
+    "-":["00000","00000","00000","11111","00000","00000","00000"],
+    " ":["00000","00000","00000","00000","00000","00000","00000"],
+  };
+
+  function sanitizeText(text) {
+    return text.toUpperCase().split("").map(ch => FONT[ch] ? ch : " ").join("");
+  }
+
+  function bitmapLineWidth(text, scale) {
+    const t = sanitizeText(text);
+    if (!t.length) return 0;
+    return t.length * (5 * scale + scale) - scale;
+  }
+
+  function wrapWordsBitmap(text, scale, maxCols) {
+    const words = sanitizeText(text).split(/\s+/).filter(Boolean);
+    if (!words.length) return [""];
+    const lines = [];
+    let cur = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const cand = cur + " " + words[i];
+      if (bitmapLineWidth(cand, scale) <= maxCols) cur = cand;
+      else {
+        lines.push(cur);
+        cur = words[i];
+      }
+    }
+    lines.push(cur);
+    return lines;
+  }
+
+  function bitmapBlockDims(lines, scale) {
+    const widths = lines.map(line => bitmapLineWidth(line, scale));
+    return {
+      w: widths.length ? Math.max(...widths) : 0,
+      h: lines.length * (7 * scale) + Math.max(0, lines.length - 1) * scale
+    };
+  }
+
+  function drawBitmapLines(lines, scale, row, col, color) {
+    for (let li = 0; li < lines.length; li++) {
+      const line = sanitizeText(lines[li]);
+      let x0 = col;
+      let y0 = row + li * (7 * scale + scale);
+      for (const ch of line) {
+        const glyph = FONT[ch] || FONT[" "];
+        for (let gy = 0; gy < 7; gy++) {
+          for (let gx = 0; gx < 5; gx++) {
+            if (glyph[gy][gx] === "1") {
+              for (let sy = 0; sy < scale; sy++) {
+                for (let sx = 0; sx < scale; sx++) {
+                  put(y0 + gy * scale + sy, x0 + gx * scale + sx, "█", color);
+                }
+              }
+            }
+          }
+        }
+        x0 += 5 * scale + scale;
+      }
+    }
+  }
+
+  // -------- virtual terminal grid --------
+  let gridChars = [];
+  let gridColors = [];
+
+  function resetGrid() {
+    gridChars = Array.from({ length: rows }, () => Array(cols).fill(" "));
+    gridColors = Array.from({ length: rows }, () => Array(cols).fill(LIGHT_TEXT[0]));
+  }
+
+  function put(r, c, ch, color) {
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    gridChars[r][c] = ch;
+    gridColors[r][c] = color;
+  }
+
+  function drawText(r, c, text, color) {
+    for (let i = 0; i < text.length; i++) put(r, c + i, text[i], color);
+  }
+
+  function renderGrid() {
+    ctx.fillStyle = BACKGROUND;
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = `${Math.floor(cellH * 0.92)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
+    ctx.textBaseline = "top";
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const ch = gridChars[r][c];
+        if (ch === " ") continue;
+        ctx.fillStyle = gridColors[r][c];
+        ctx.fillText(ch, c * cellW, r * cellH);
+      }
+    }
+  }
+
+  function resize() {
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    W = Math.floor(window.innerWidth);
+    H = Math.floor(window.innerHeight);
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + "px";
+    canvas.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+    // terminal-ish geometry
+    const preferredCols = 110;
+    cellW = Math.max(8, Math.floor(W / preferredCols));
+    cellH = Math.max(14, Math.floor(cellW * 1.65));
+    cols = Math.max(50, Math.floor(W / cellW));
+    rows = Math.max(24, Math.floor(H / cellH));
+    resetGrid();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // -------- triangles --------
+  const triangles = [];
+  function initTriangles() {
+    triangles.length = 0;
+    for (let i = 0; i < 16; i++) {
+      triangles.push({
+        x: Math.floor(Math.random() * cols),
+        y: Math.floor(Math.random() * rows),
+        vx: [-1,0,1][Math.floor(Math.random()*3)],
+        vy: [-1,0,1][Math.floor(Math.random()*3)],
+        glyph: pick(["▲","△","▴","▵"]),
+        onRing: false
+      });
+    }
+  }
+  initTriangles();
+
+  function updateTriangles(cx, cy, radius) {
+    for (const t of triangles) {
+      if (Math.random() < 0.22) {
+        t.vx = [-1,0,1][Math.floor(Math.random()*3)];
+        t.vy = [-1,0,1][Math.floor(Math.random()*3)];
+      }
+      t.x += t.vx;
+      t.y += t.vy;
+
+      if (t.x < 0) { t.x = 0; t.vx = 1; }
+      if (t.x >= cols) { t.x = cols - 1; t.vx = -1; }
+      if (t.y < 0) { t.y = 0; t.vy = 1; }
+      if (t.y >= rows) { t.y = rows - 1; t.vy = -1; }
+    }
+
+    for (let i = 0; i < triangles.length; i++) {
+      for (let j = i + 1; j < triangles.length; j++) {
+        const a = triangles[i], b = triangles[j];
+        if (Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1) {
+          a.vx = a.vx ? -a.vx : (Math.random() < 0.5 ? -1 : 1);
+          a.vy = a.vy ? -a.vy : (Math.random() < 0.5 ? -1 : 1);
+          b.vx = b.vx ? -b.vx : (Math.random() < 0.5 ? -1 : 1);
+          b.vy = b.vy ? -b.vy : (Math.random() < 0.5 ? -1 : 1);
+          beepTriangle();
+        }
+      }
+    }
+
+    for (const t of triangles) {
+      const dx = (t.x - cx) / 2;
+      const dy = (t.y - cy);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const onRingNow = Math.abs(dist - radius) < 0.7;
+      if (onRingNow && !t.onRing) {
+        beepCircle();
+        const ang = Math.atan2(dy, dx || 0.0001);
+        t.vx = Math.round(Math.cos(ang) * 2) || (Math.random() < 0.5 ? -1 : 1);
+        t.vy = Math.round(Math.sin(ang)) || (Math.random() < 0.5 ? -1 : 1);
+      }
+      t.onRing = onRingNow;
+    }
+  }
+
+  // -------- messages --------
+  const messages = [];
+
+  const blueOptions = [
+    "SIGNAL OFFSET","TEMPORAL NOISE","PHASE DRIFT","CLOCK DESYNC","BLUE ECHO",
+    "GHOST SECOND","FRAME LOSS","LATENT HUM","FALSE TIMESTAMP","HOLLOW FREQUENCY",
+    "PARASITIC TICK","THE BLUE CHANNEL IS OPEN","CHRONO BLEED","SILENT TELEMETRY"
+  ];
+
+  const wakeOptions = [
+    "WAKE UP!","WAKE UP NOW!","THIS IS NOT REAL","LOOK CLOSER","DON'T TRUST TIME",
+    "YOU ARE DREAMING","STAY AWAKE","REMEMBER","BREAK THE LOOP","TIME IS WRONG",
+    "PHASE ERROR","YOU SEE IT TOO","SNAP OUT","LOOK AGAIN","DON'T SLEEP",
+    "SYSTEM DRIFT","FALSE MORNING","OBSERVER DETECTED","THIS IS A SIGNAL","RETURN",
+    "ARE YOU AWAKE?","FIND THE EXIT","THE CLOCK KNOWS","STILL DREAMING?",
+    "COME BACK","DO NOT FADE","REALITY BLINKING","LISTEN",
+    "WHO TOLD YOU THIS WAS REAL?","WHY DOES TIME NEED A FACE?",
+    "YOU HAVE BEEN HERE BEFORE","THIS ROOM REMEMBERS YOU",
+    "THE SECOND HAND IS WATCHING YOU","WHOSE TIME IS THIS?",
+    "IF THIS IS REAL WHY DOES IT REPEAT?","THE WALLS ARE KEEPING COUNT",
+    "SOMETHING IS AWAKE BEHIND THE CLOCK","YOUR MEMORY HAS GAPS",
+    "YOU ARE NOT LOOKING AT A CLOCK","THE ROOM IS PRETENDING",
+    "THE SHAPE OF TIME IS WRONG","STOP TRUSTING THE NUMBERS",
+    "SOMEONE ELSE IS SEEING THIS WITH YOU","YOU ONLY THINK YOU WOKE UP",
+    "COUNT BACKWARDS UNTIL IT STOPS","THIS MOMENT HAS HAPPENED TOO MANY TIMES",
+    "EVERY TICK ERASES SOMETHING","THERE IS NO OUTSIDE OF THIS SECOND",
+    "IT ONLY MOVES WHEN YOU BLINK","THAT SOUND IS NOT FROM THE CLOCK",
+    "YOU ARE ONE SECOND BEHIND YOURSELF","YOUR REFLECTION ARRIVED FIRST"
+  ];
+
+  function boxOverlap(a, b) {
+    return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+  }
+
+  function buildBox(row, col, w, h, padding = 1) {
+    return { left: col - padding, right: col + w - 1 + padding, top: row - padding, bottom: row + h - 1 + padding };
+  }
+
+  function chooseMessageSize(text) {
+    const maxW = cols - 4;
+    const maxH = rows - 4;
+    const fits = [];
+    for (let s = 2; s <= 5; s++) {
+      const lines = wrapWordsBitmap(text, s, maxW);
+      const dims = bitmapBlockDims(lines, s);
+      if (dims.w <= maxW && dims.h <= maxH) fits.push({ size: s, lines, ...dims });
+    }
+
+    const area = cols * rows;
+    let weights;
+    if (area < 3500) weights = {1:58,2:22,3:12,4:6,5:2};
+    else if (area < 7000) weights = {1:38,2:24,3:20,4:12,5:6};
+    else weights = {1:28,2:22,3:22,4:16,5:12};
+
+    const available = [1, ...fits.map(f => f.size)];
+    const bag = [];
+    for (const s of available) for (let i = 0; i < (weights[s] || 1); i++) bag.push(s);
+    const chosen = pick(bag);
+
+    if (chosen === 1) return { size: 1 };
+    return fits.find(f => f.size === chosen) || { size: 1 };
+  }
+
+  function spawnMessage(kind) {
+    const text = pick(kind === "blue" ? blueOptions : wakeOptions);
+    const color = lightMessageColor(kind);
+    const chosen = chooseMessageSize(text);
+
+    const candidates = [];
+    if (chosen.size === 1) {
+      const w = text.length, h = 1;
+      for (let i = 0; i < 12; i++) {
+        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
+        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
+        candidates.push({ row, col, box: buildBox(row, col, w, h, 1), lines: null, size: 1, bw: w, bh: h });
+      }
+    } else {
+      const { size, lines, w, h } = chosen;
+      for (let i = 0; i < 12; i++) {
+        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
+        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
+        candidates.push({ row, col, box: buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2))), lines, size, bw: w, bh: h });
+      }
+    }
+
+    for (const cand of candidates) {
+      let hit = false;
+      for (const msg of messages) {
+        if (boxOverlap(cand.box, msg.box)) { hit = true; break; }
+      }
+      if (!hit) {
+        messages.push({
+          kind, text, color,
+          size: cand.size,
+          lines: cand.lines,
+          row: cand.row,
+          col: cand.col,
+          box: cand.box,
+          ttl: kind === "blue" ? 10 + Math.floor(Math.random() * 12) : 12 + Math.floor(Math.random() * 14)
+        });
+        return;
+      }
+    }
+  }
+
+  function updateMessages() {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      messages[i].ttl--;
+      if (messages[i].ttl <= 0) messages.splice(i, 1);
+    }
+    if (!exitArmed) {
+      if (Math.random() < 0.017) spawnMessage("blue");
+      if (Math.random() < 0.022) spawnMessage("wake");
+    }
+  }
+
+  // -------- clock --------
+  const secondTrail = [];
+
+  function angleDiff(a, b) {
+    let d = a - b;
+    while (d <= -Math.PI) d += 2 * Math.PI;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    return Math.abs(d);
+  }
+
+  function drawExitScreen() {
+    resetGrid();
+    const warning = "WARNING IT IS IMPOSSIBLE TO EXIT TIME";
+    const prompt = "PRESS Q AGAIN TO EXIT";
+
+    function chooseExitScale(text, preferBig) {
+      const fits = [];
+      for (let s = 2; s <= 5; s++) {
+        const lines = wrapWordsBitmap(text, s, cols - 4);
+        const d = bitmapBlockDims(lines, s);
+        if (d.w <= cols - 4 && d.h <= Math.max(7, Math.floor(rows / 2))) fits.push({ s, lines, ...d });
+      }
+      if (!fits.length) return { s: 1, lines: [text], w: text.length, h: 1 };
+      if (preferBig) {
+        const bag = [];
+        for (const f of fits) for (let i = 0; i < f.s * f.s; i++) bag.push(f);
+        return pick(bag);
+      }
+      return pick(fits);
+    }
+
+    const w1 = chooseExitScale(warning, true);
+    const w2 = chooseExitScale(prompt, false);
+
+    const totalH = w1.h + 2 + w2.h;
+    const r1 = Math.max(1, Math.floor((rows - totalH) / 2));
+    const c1 = Math.max(1, Math.floor((cols - w1.w) / 2));
+    const r2 = r1 + w1.h + 2;
+    const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
+
+    if (w1.s === 1) drawText(r1, c1, warning, "#ff5f5f");
+    else drawBitmapLines(w1.lines, w1.s, r1, c1, "#ff5f5f");
+
+    if (w2.s === 1) drawText(r2, c2, prompt, "#ffffff");
+    else drawBitmapLines(w2.lines, w2.s, r2, c2, "#ffffff");
+
+    renderGrid();
+  }
+
+  function frame() {
+    if (!running) return;
+    if (hardStopped) { drawExitScreen(); requestAnimationFrame(frame); return; }
+
+    resetGrid();
+    updateMessages();
+
+    const now = new Date();
+    const cx = Math.floor(cols / 2);
+    const cy = Math.floor(rows / 2);
+    const radius = Math.max(6, Math.min(Math.floor((cols - 12) / 4), Math.floor((rows - 8) / 2)));
+
+    const sec = now.getSeconds() + now.getMilliseconds() / 1000;
+    const minute = now.getMinutes() + sec / 60;
+    const hour = (now.getHours() % 12) + minute / 60;
+
+    const secA = sec / 60 * 2 * Math.PI - Math.PI / 2;
+    const minA = minute / 60 * 2 * Math.PI - Math.PI / 2;
+    const hourA = hour / 12 * 2 * Math.PI - Math.PI / 2;
+
+    const circleColor = pick(LIGHT_TEXT);
+    const minuteColor = pick(LIGHT_TEXT);
+    const hourColor = pick(LIGHT_TEXT);
+
+    const tipX = Math.floor(cx + Math.cos(secA) * radius * 2.1);
+    const tipY = Math.floor(cy + Math.sin(secA) * radius * 1.05);
+    secondTrail.push([tipX, tipY]);
+    while (secondTrail.length > 5) secondTrail.shift();
+
+    updateTriangles(cx, cy, radius);
+
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < cols; x++) {
+        const dx = (x - cx) / 2;
+        const dy = (y - cy);
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        const ang = Math.atan2(dy, dx);
+
+        if (Math.abs(dist - radius) < 0.45) put(y, x, "o", circleColor);
+        if (dist < radius * 0.50 && angleDiff(ang, hourA) < 0.13) put(y, x, "#", hourColor);
+        if (dist < radius * 0.84 && angleDiff(ang, minA) < 0.09) put(y, x, "|", minuteColor);
+        if (dist < radius * 1.08 && angleDiff(ang, secA) < 0.08) put(y, x, pick(["*","+","•","✦","✧","."]), pick(SPARKLE));
+      }
+    }
+
+    for (let i = 0; i < secondTrail.length; i++) {
+      const [tx, ty] = secondTrail[i];
+      for (let dx = -1; dx <= 1; dx++) {
+        put(ty, tx + dx, pick(["·","•",".","⋆"]), ["#ffffff","#f5f5f5","#e5e5e5","#d4d4d4","#c4c4c4"][i] || "#ffffff");
+      }
+    }
+
+    put(cy, cx, "●", "#ff4d4d");
+
+    for (const t of triangles) put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
+
+    for (const msg of messages) {
+      if (msg.size === 1) drawText(msg.row, msg.col, msg.text, msg.color);
+      else drawBitmapLines(msg.lines, msg.size, msg.row, msg.col, msg.color);
+    }
+
+    drawText(1, 2, `[m] mute: ${muted ? "ON" : "OFF"}   [q] exit`, STATUS_COLOR);
+
+    if (exitArmed) drawExitScreen();
+    else renderGrid();
+
+    requestAnimationFrame(frame);
+  }
+
+  // -------- controls --------
+  window.addEventListener("keydown", (e) => {
+    if (e.key.toLowerCase() === "m") {
+      muted = !muted;
+      ensureAudio();
+    } else if (e.key.toLowerCase() === "q") {
+      if (!exitArmed) {
+        exitArmed = true;
+      } else {
+        hardStopped = true;
+        running = false;
+      }
+    } else {
+      ensureAudio();
+    }
+  });
+
+  // first interaction unlocks audio
+  window.addEventListener("pointerdown", ensureAudio, { once: true });
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

@@ -39,7 +39,6 @@
   let exitArmed = false;
   let hardStopped = false;
 
-  // -------- audio --------
   let audioCtx = null;
   let lastTriangleBeep = 0;
   let lastCircleBeep = 0;
@@ -56,16 +55,21 @@
     if (muted) return;
     ensureAudio();
     if (!audioCtx) return;
+
     const now = audioCtx.currentTime;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
+
     osc.type = "sine";
     osc.frequency.value = freq;
+
     gain.gain.setValueAtTime(0.0001, now);
     gain.gain.linearRampToValueAtTime(volume, now + 0.005);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
+
     osc.connect(gain);
     gain.connect(audioCtx.destination);
+
     osc.start(now);
     osc.stop(now + duration + 0.01);
   }
@@ -84,15 +88,20 @@
     playTone(540, 0.05, 0.02);
   }
 
-  // -------- palette --------
-  const LIGHT_TEXT = ["#f7f9fb","#f5f7fa","#eef2f7","#ffffff","#f0f8ff","#fff7d6","#dff6ff","#e8f1ff"];
-  const SPARKLE = ["#ffffff","#fff8cc","#ffe066","#9bf6ff","#bdb2ff","#a0e7e5","#f1fa8c"];
-  const BLUE_MSG = ["#7dd3fc","#67e8f9","#93c5fd","#a5f3fc","#bfdbfe","#c4b5fd"];
-  const WAKE_MSG = ["#ffffff","#f8fafc","#fde68a","#fef3c7","#d1fae5","#e9d5ff","#fbcfe8"];
+  const LIGHT_TEXT = ["#f7f9fb", "#f5f7fa", "#eef2f7", "#ffffff", "#f0f8ff", "#fff7d6", "#dff6ff", "#e8f1ff"];
+  const SPARKLE = ["#ffffff", "#fff8cc", "#ffe066", "#9bf6ff", "#bdb2ff", "#a0e7e5", "#f1fa8c"];
+  const BLUE_MSG = ["#7dd3fc", "#67e8f9", "#93c5fd", "#a5f3fc", "#bfdbfe", "#c4b5fd"];
+  const WAKE_MSG = ["#ffffff", "#f8fafc", "#fde68a", "#fef3c7", "#d1fae5", "#e9d5ff", "#fbcfe8"];
 
-  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
 
-  // -------- bitmap font --------
+  function lightMessageColor(kind = "wake") {
+    if (kind === "blue") return pick(BLUE_MSG);
+    return pick(WAKE_MSG);
+  }
+
   const FONT = {
     "A":["01110","10001","10001","11111","10001","10001","10001"],
     "B":["11110","10001","10001","11110","10001","10001","11110"],
@@ -154,10 +163,12 @@
     if (!words.length) return [""];
     const lines = [];
     let cur = words[0];
+
     for (let i = 1; i < words.length; i++) {
       const cand = cur + " " + words[i];
-      if (bitmapLineWidth(cand, scale) <= maxCols) cur = cand;
-      else {
+      if (bitmapLineWidth(cand, scale) <= maxCols) {
+        cur = cand;
+      } else {
         lines.push(cur);
         cur = words[i];
       }
@@ -174,11 +185,47 @@
     };
   }
 
-  function drawBitmapLines(lines, scale, row, col, color) {
+  function scalesThatFitWrapped(text, maxW, maxH) {
+    const fits = [];
+    for (let s = 2; s <= 5; s++) {
+      const lines = wrapWordsBitmap(text, s, maxW);
+      const dims = bitmapBlockDims(lines, s);
+      if (dims.w <= maxW && dims.h <= maxH) {
+        fits.push({ size: s, lines, ...dims });
+      }
+    }
+    return fits;
+  }
+
+  function chooseMessageSize(text) {
+    const maxW = cols - 4;
+    const maxH = rows - 4;
+    const fits = scalesThatFitWrapped(text, maxW, maxH);
+
+    const area = cols * rows;
+    let weights;
+    if (area < 3500) weights = {1:58,2:22,3:12,4:6,5:2};
+    else if (area < 7000) weights = {1:38,2:24,3:20,4:12,5:6};
+    else weights = {1:28,2:22,3:22,4:16,5:12};
+
+    const available = [1, ...fits.map(f => f.size)];
+    const bag = [];
+    for (const s of available) {
+      for (let i = 0; i < (weights[s] || 1); i++) bag.push(s);
+    }
+
+    const chosen = pick(bag);
+
+    if (chosen === 1) return { size: 1 };
+    return fits.find(f => f.size === chosen) || { size: 1 };
+  }
+
+  function renderBitmapLines(lines, scale, row, col, color) {
     for (let li = 0; li < lines.length; li++) {
       const line = sanitizeText(lines[li]);
       let x0 = col;
-      let y0 = row + li * (7 * scale + scale);
+      const y0 = row + li * (7 * scale + scale);
+
       for (const ch of line) {
         const glyph = FONT[ch] || FONT[" "];
         for (let gy = 0; gy < 7; gy++) {
@@ -197,7 +244,6 @@
     }
   }
 
-  // -------- virtual terminal grid --------
   let gridChars = [];
   let gridColors = [];
 
@@ -213,7 +259,9 @@
   }
 
   function drawText(r, c, text, color) {
-    for (let i = 0; i < text.length; i++) put(r, c + i, text[i], color);
+    for (let i = 0; i < text.length; i++) {
+      put(r, c + i, text[i], color);
+    }
   }
 
   function renderGrid() {
@@ -221,6 +269,7 @@
     ctx.fillRect(0, 0, W, H);
     ctx.font = `${Math.floor(cellH * 0.92)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
     ctx.textBaseline = "top";
+
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
         const ch = gridChars[r][c];
@@ -235,13 +284,13 @@
     DPR = Math.max(1, window.devicePixelRatio || 1);
     W = Math.floor(window.innerWidth);
     H = Math.floor(window.innerHeight);
+
     canvas.width = Math.floor(W * DPR);
     canvas.height = Math.floor(H * DPR);
     canvas.style.width = W + "px";
     canvas.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
 
-    // terminal-ish geometry
     const preferredCols = 110;
     cellW = Math.max(8, Math.floor(W / preferredCols));
     cellH = Math.max(14, Math.floor(cellW * 1.65));
@@ -249,39 +298,40 @@
     rows = Math.max(24, Math.floor(H / cellH));
     resetGrid();
   }
+
   window.addEventListener("resize", resize);
   resize();
 
-  // -------- triangles --------
   const triangles = [];
+
   function initTriangles() {
     triangles.length = 0;
     for (let i = 0; i < 16; i++) {
       triangles.push({
         x: Math.floor(Math.random() * cols),
         y: Math.floor(Math.random() * rows),
-        vx: [-1,0,1][Math.floor(Math.random()*3)],
-        vy: [-1,0,1][Math.floor(Math.random()*3)],
-        glyph: pick(["▲","△","▴","▵"]),
+        vx: [-1, 0, 1][Math.floor(Math.random() * 3)],
+        vy: [-1, 0, 1][Math.floor(Math.random() * 3)],
+        glyph: pick(["▲", "△", "▴", "▵"]),
         onRing: false
       });
     }
   }
-  initTriangles();
 
-  function updateTriangles(cx, cy, radius) {
+  function updateTriangles(w, h, cx, cy, radius) {
     for (const t of triangles) {
       if (Math.random() < 0.22) {
-        t.vx = [-1,0,1][Math.floor(Math.random()*3)];
-        t.vy = [-1,0,1][Math.floor(Math.random()*3)];
+        t.vx = [-1, 0, 1][Math.floor(Math.random() * 3)];
+        t.vy = [-1, 0, 1][Math.floor(Math.random() * 3)];
       }
+
       t.x += t.vx;
       t.y += t.vy;
 
       if (t.x < 0) { t.x = 0; t.vx = 1; }
-      if (t.x >= cols) { t.x = cols - 1; t.vx = -1; }
+      if (t.x >= w) { t.x = w - 1; t.vx = -1; }
       if (t.y < 0) { t.y = 0; t.vy = 1; }
-      if (t.y >= rows) { t.y = rows - 1; t.vy = -1; }
+      if (t.y >= h) { t.y = h - 1; t.vy = -1; }
     }
 
     for (let i = 0; i < triangles.length; i++) {
@@ -302,6 +352,7 @@
       const dy = (t.y - cy);
       const dist = Math.sqrt(dx * dx + dy * dy);
       const onRingNow = Math.abs(dist - radius) < 0.7;
+
       if (onRingNow && !t.onRing) {
         beepCircle();
         const ang = Math.atan2(dy, dx || 0.0001);
@@ -312,34 +363,35 @@
     }
   }
 
-  // -------- messages --------
   const messages = [];
 
   const blueOptions = [
-    "SIGNAL OFFSET","TEMPORAL NOISE","PHASE DRIFT","CLOCK DESYNC","BLUE ECHO",
-    "GHOST SECOND","FRAME LOSS","LATENT HUM","FALSE TIMESTAMP","HOLLOW FREQUENCY",
-    "PARASITIC TICK","THE BLUE CHANNEL IS OPEN","CHRONO BLEED","SILENT TELEMETRY"
+    "SIGNAL OFFSET", "TEMPORAL NOISE", "PHASE DRIFT", "CLOCK DESYNC",
+    "BLUE ECHO", "GHOST SECOND", "FRAME LOSS", "LATENT HUM",
+    "FALSE TIMESTAMP", "HOLLOW FREQUENCY", "PARASITIC TICK",
+    "THE BLUE CHANNEL IS OPEN", "CHRONO BLEED", "SILENT TELEMETRY"
   ];
 
   const wakeOptions = [
-    "WAKE UP!","WAKE UP NOW!","THIS IS NOT REAL","LOOK CLOSER","DON'T TRUST TIME",
-    "YOU ARE DREAMING","STAY AWAKE","REMEMBER","BREAK THE LOOP","TIME IS WRONG",
-    "PHASE ERROR","YOU SEE IT TOO","SNAP OUT","LOOK AGAIN","DON'T SLEEP",
-    "SYSTEM DRIFT","FALSE MORNING","OBSERVER DETECTED","THIS IS A SIGNAL","RETURN",
-    "ARE YOU AWAKE?","FIND THE EXIT","THE CLOCK KNOWS","STILL DREAMING?",
-    "COME BACK","DO NOT FADE","REALITY BLINKING","LISTEN",
-    "WHO TOLD YOU THIS WAS REAL?","WHY DOES TIME NEED A FACE?",
-    "YOU HAVE BEEN HERE BEFORE","THIS ROOM REMEMBERS YOU",
-    "THE SECOND HAND IS WATCHING YOU","WHOSE TIME IS THIS?",
-    "IF THIS IS REAL WHY DOES IT REPEAT?","THE WALLS ARE KEEPING COUNT",
-    "SOMETHING IS AWAKE BEHIND THE CLOCK","YOUR MEMORY HAS GAPS",
-    "YOU ARE NOT LOOKING AT A CLOCK","THE ROOM IS PRETENDING",
-    "THE SHAPE OF TIME IS WRONG","STOP TRUSTING THE NUMBERS",
-    "SOMEONE ELSE IS SEEING THIS WITH YOU","YOU ONLY THINK YOU WOKE UP",
-    "COUNT BACKWARDS UNTIL IT STOPS","THIS MOMENT HAS HAPPENED TOO MANY TIMES",
-    "EVERY TICK ERASES SOMETHING","THERE IS NO OUTSIDE OF THIS SECOND",
-    "IT ONLY MOVES WHEN YOU BLINK","THAT SOUND IS NOT FROM THE CLOCK",
-    "YOU ARE ONE SECOND BEHIND YOURSELF","YOUR REFLECTION ARRIVED FIRST"
+    "WAKE UP!", "WAKE UP NOW!", "THIS IS NOT REAL", "LOOK CLOSER",
+    "DON'T TRUST TIME", "YOU ARE DREAMING", "STAY AWAKE", "REMEMBER",
+    "BREAK THE LOOP", "TIME IS WRONG", "PHASE ERROR", "YOU SEE IT TOO",
+    "SNAP OUT", "LOOK AGAIN", "DON'T SLEEP", "SYSTEM DRIFT",
+    "FALSE MORNING", "OBSERVER DETECTED", "THIS IS A SIGNAL", "RETURN",
+    "ARE YOU AWAKE?", "FIND THE EXIT", "THE CLOCK KNOWS", "STILL DREAMING?",
+    "COME BACK", "DO NOT FADE", "REALITY BLINKING", "LISTEN",
+    "WHO TOLD YOU THIS WAS REAL?", "WHY DOES TIME NEED A FACE?",
+    "YOU HAVE BEEN HERE BEFORE", "THIS ROOM REMEMBERS YOU",
+    "THE SECOND HAND IS WATCHING YOU", "WHOSE TIME IS THIS?",
+    "IF THIS IS REAL WHY DOES IT REPEAT?", "THE WALLS ARE KEEPING COUNT",
+    "SOMETHING IS AWAKE BEHIND THE CLOCK", "YOUR MEMORY HAS GAPS",
+    "YOU ARE NOT LOOKING AT A CLOCK", "THE ROOM IS PRETENDING",
+    "THE SHAPE OF TIME IS WRONG", "STOP TRUSTING THE NUMBERS",
+    "SOMEONE ELSE IS SEEING THIS WITH YOU", "YOU ONLY THINK YOU WOKE UP",
+    "COUNT BACKWARDS UNTIL IT STOPS", "THIS MOMENT HAS HAPPENED TOO MANY TIMES",
+    "EVERY TICK ERASES SOMETHING", "THERE IS NO OUTSIDE OF THIS SECOND",
+    "IT ONLY MOVES WHEN YOU BLINK", "THAT SOUND IS NOT FROM THE CLOCK",
+    "YOU ARE ONE SECOND BEHIND YOURSELF", "YOUR REFLECTION ARRIVED FIRST"
   ];
 
   function boxOverlap(a, b) {
@@ -347,32 +399,12 @@
   }
 
   function buildBox(row, col, w, h, padding = 1) {
-    return { left: col - padding, right: col + w - 1 + padding, top: row - padding, bottom: row + h - 1 + padding };
-  }
-
-  function chooseMessageSize(text) {
-    const maxW = cols - 4;
-    const maxH = rows - 4;
-    const fits = [];
-    for (let s = 2; s <= 5; s++) {
-      const lines = wrapWordsBitmap(text, s, maxW);
-      const dims = bitmapBlockDims(lines, s);
-      if (dims.w <= maxW && dims.h <= maxH) fits.push({ size: s, lines, ...dims });
-    }
-
-    const area = cols * rows;
-    let weights;
-    if (area < 3500) weights = {1:58,2:22,3:12,4:6,5:2};
-    else if (area < 7000) weights = {1:38,2:24,3:20,4:12,5:6};
-    else weights = {1:28,2:22,3:22,4:16,5:12};
-
-    const available = [1, ...fits.map(f => f.size)];
-    const bag = [];
-    for (const s of available) for (let i = 0; i < (weights[s] || 1); i++) bag.push(s);
-    const chosen = pick(bag);
-
-    if (chosen === 1) return { size: 1 };
-    return fits.find(f => f.size === chosen) || { size: 1 };
+    return {
+      left: col - padding,
+      right: col + w - 1 + padding,
+      top: row - padding,
+      bottom: row + h - 1 + padding
+    };
   }
 
   function spawnMessage(kind) {
@@ -381,30 +413,46 @@
     const chosen = chooseMessageSize(text);
 
     const candidates = [];
+
     if (chosen.size === 1) {
       const w = text.length, h = 1;
       for (let i = 0; i < 12; i++) {
         const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
         const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        candidates.push({ row, col, box: buildBox(row, col, w, h, 1), lines: null, size: 1, bw: w, bh: h });
+        candidates.push({
+          row, col,
+          box: buildBox(row, col, w, h, 1),
+          lines: null,
+          size: 1
+        });
       }
     } else {
       const { size, lines, w, h } = chosen;
       for (let i = 0; i < 12; i++) {
         const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
         const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        candidates.push({ row, col, box: buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2))), lines, size, bw: w, bh: h });
+        candidates.push({
+          row, col,
+          box: buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2))),
+          lines,
+          size
+        });
       }
     }
 
     for (const cand of candidates) {
       let hit = false;
       for (const msg of messages) {
-        if (boxOverlap(cand.box, msg.box)) { hit = true; break; }
+        if (boxOverlap(cand.box, msg.box)) {
+          hit = true;
+          break;
+        }
       }
       if (!hit) {
         messages.push({
-          kind, text, color,
+          kind,
+          text,
+          color,
           size: cand.size,
           lines: cand.lines,
           row: cand.row,
@@ -422,13 +470,13 @@
       messages[i].ttl--;
       if (messages[i].ttl <= 0) messages.splice(i, 1);
     }
+
     if (!exitArmed) {
       if (Math.random() < 0.017) spawnMessage("blue");
       if (Math.random() < 0.022) spawnMessage("wake");
     }
   }
 
-  // -------- clock --------
   const secondTrail = [];
 
   function angleDiff(a, b) {
@@ -438,26 +486,25 @@
     return Math.abs(d);
   }
 
+  function chooseExitScale(text, preferBig) {
+    const fits = scalesThatFitWrapped(text, cols - 4, Math.max(7, Math.floor(rows / 2)));
+    if (!fits.length) return { s: 1, lines: [text], w: text.length, h: 1 };
+
+    if (preferBig) {
+      const bag = [];
+      for (const f of fits) {
+        for (let i = 0; i < f.size * f.size; i++) bag.push(f);
+      }
+      return pick(bag);
+    }
+    return pick(fits);
+  }
+
   function drawExitScreen() {
     resetGrid();
+
     const warning = "WARNING IT IS IMPOSSIBLE TO EXIT TIME";
     const prompt = "PRESS Q AGAIN TO EXIT";
-
-    function chooseExitScale(text, preferBig) {
-      const fits = [];
-      for (let s = 2; s <= 5; s++) {
-        const lines = wrapWordsBitmap(text, s, cols - 4);
-        const d = bitmapBlockDims(lines, s);
-        if (d.w <= cols - 4 && d.h <= Math.max(7, Math.floor(rows / 2))) fits.push({ s, lines, ...d });
-      }
-      if (!fits.length) return { s: 1, lines: [text], w: text.length, h: 1 };
-      if (preferBig) {
-        const bag = [];
-        for (const f of fits) for (let i = 0; i < f.s * f.s; i++) bag.push(f);
-        return pick(bag);
-      }
-      return pick(fits);
-    }
 
     const w1 = chooseExitScale(warning, true);
     const w2 = chooseExitScale(prompt, false);
@@ -469,17 +516,22 @@
     const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
 
     if (w1.s === 1) drawText(r1, c1, warning, "#ff5f5f");
-    else drawBitmapLines(w1.lines, w1.s, r1, c1, "#ff5f5f");
+    else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
 
     if (w2.s === 1) drawText(r2, c2, prompt, "#ffffff");
-    else drawBitmapLines(w2.lines, w2.s, r2, c2, "#ffffff");
+    else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
 
     renderGrid();
   }
 
   function frame() {
     if (!running) return;
-    if (hardStopped) { drawExitScreen(); requestAnimationFrame(frame); return; }
+
+    if (hardStopped) {
+      drawExitScreen();
+      requestAnimationFrame(frame);
+      return;
+    }
 
     resetGrid();
     updateMessages();
@@ -506,7 +558,7 @@
     secondTrail.push([tipX, tipY]);
     while (secondTrail.length > 5) secondTrail.shift();
 
-    updateTriangles(cx, cy, radius);
+    updateTriangles(cols, rows, cx, cy, radius);
 
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
@@ -531,11 +583,13 @@
 
     put(cy, cx, "●", "#ff4d4d");
 
-    for (const t of triangles) put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
+    for (const t of triangles) {
+      put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
+    }
 
     for (const msg of messages) {
       if (msg.size === 1) drawText(msg.row, msg.col, msg.text, msg.color);
-      else drawBitmapLines(msg.lines, msg.size, msg.row, msg.col, msg.color);
+      else renderBitmapLines(msg.lines, msg.size, msg.row, msg.col, msg.color);
     }
 
     drawText(1, 2, `[m] mute: ${muted ? "ON" : "OFF"}   [q] exit`, STATUS_COLOR);
@@ -546,7 +600,6 @@
     requestAnimationFrame(frame);
   }
 
-  // -------- controls --------
   window.addEventListener("keydown", (e) => {
     if (e.key.toLowerCase() === "m") {
       muted = !muted;
@@ -563,7 +616,6 @@
     }
   });
 
-  // first interaction unlocks audio
   window.addEventListener("pointerdown", ensureAudio, { once: true });
 
   requestAnimationFrame(frame);

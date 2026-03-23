@@ -739,6 +739,11 @@
     return Math.round(y / GLITTER_CELL_H) * GLITTER_CELL_H;
   }
 
+  function currentFreezeBurstStrength(nowMs = performance.now()) {
+  if (freezeBurstDecayUntil <= nowMs) return 0;
+  return Math.max(0, (freezeBurstDecayUntil - nowMs) / 15000);
+}
+
   function renderGlitter() {
     if (!glitterParticles.length) return;
 

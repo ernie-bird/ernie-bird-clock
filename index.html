@@ -169,6 +169,11 @@
     return pointerIsDown && !pointerIsDragging(now);
   }
 
+  function currentFreezeBurstStrength(nowMs = performance.now()) {
+    if (freezeBurstDecayUntil <= nowMs) return 0;
+    return Math.max(0, (freezeBurstDecayUntil - nowMs) / 15000);
+  }
+
   function pickMessageWithCooldown(options, nowMs) {
     const available = options.filter(text => (messageCooldowns.get(text) || 0) <= nowMs);
     const chosen = pick(available.length ? available : options);
@@ -188,7 +193,7 @@
   }
 
   function updateButtons() {
-    muteBtn.textContent = muted ? "Unmute (m)" : "Mute (m)";
+    if (muteBtn) muteBtn.textContent = muted ? "Unmute (m)" : "Mute (m)";
   }
 
   function markAudioReady() {
@@ -295,42 +300,43 @@
     osc.stop(now + duration + 0.01);
   }
 
- function ensureHoldTone() {
-  if (muted) return;
-  if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
-  if (holdOsc) return;
+  function ensureHoldTone() {
+    if (muted) return;
+    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+    if (holdOsc) return;
 
-  const now = audioCtx.currentTime;
+    const now = audioCtx.currentTime;
 
-  holdOsc = audioCtx.createOscillator();
-  holdGain = audioCtx.createGain();
-  holdFilter = audioCtx.createBiquadFilter();
-  holdLfo = audioCtx.createOscillator();
-  holdLfoGain = audioCtx.createGain();
+    holdOsc = audioCtx.createOscillator();
+    holdGain = audioCtx.createGain();
+    holdFilter = audioCtx.createBiquadFilter();
+    holdLfo = audioCtx.createOscillator();
+    holdLfoGain = audioCtx.createGain();
 
-  holdOsc.type = "sine";
-  holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
+    holdOsc.type = "sine";
+    holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
 
-  holdFilter.type = "highpass";
-  holdFilter.frequency.setValueAtTime(1800, now);
+    holdFilter.type = "bandpass";
+    holdFilter.frequency.setValueAtTime(2600, now);
+    holdFilter.Q.setValueAtTime(1.8, now);
 
-  holdLfo.type = "sine";
-  holdLfo.frequency.setValueAtTime(4.5, now);
-  holdLfoGain.gain.setValueAtTime(2, now);
+    holdLfo.type = "sine";
+    holdLfo.frequency.setValueAtTime(4.5, now);
+    holdLfoGain.gain.setValueAtTime(0.6, now);
 
-  holdLfo.connect(holdLfoGain);
-  holdLfoGain.connect(holdOsc.frequency);
+    holdLfo.connect(holdLfoGain);
+    holdLfoGain.connect(holdOsc.frequency);
 
-  holdGain.gain.setValueAtTime(0.0001, now);
-  holdGain.gain.exponentialRampToValueAtTime(0.0025, now + 0.18);
+    holdGain.gain.setValueAtTime(0.0001, now);
+    holdGain.gain.exponentialRampToValueAtTime(0.0012, now + 0.22);
 
-  holdOsc.connect(holdFilter);
-  holdFilter.connect(holdGain);
-  holdGain.connect(masterGain);
+    holdOsc.connect(holdFilter);
+    holdFilter.connect(holdGain);
+    holdGain.connect(masterGain);
 
-  holdOsc.start(now);
-  holdLfo.start(now);
-}
+    holdOsc.start(now);
+    holdLfo.start(now);
+  }
 
   function stopHoldTone() {
     if (!holdOsc || !audioCtx) return;
@@ -351,66 +357,66 @@
     holdCurrentFreq = 1180;
   }
 
- function updateHoldTone(nowMs, dtMs) {
-  if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
-    stopHoldTone();
-    return;
+  function updateHoldTone(nowMs, dtMs) {
+    if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
+      stopHoldTone();
+      return;
+    }
+
+    ensureHoldTone();
+    if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
+
+    const frozen = isFrozenNow(nowMs);
+    const dragging = pointerIsDragging(nowMs);
+    const heldMs = nowMs - pointerDownAt;
+
+    let baseFreq;
+    let gainTarget;
+    let filterTarget;
+    let lfoFreq;
+    let lfoDepth;
+
+    if (frozen) {
+      baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
+      gainTarget = 0.008;
+      filterTarget = 5200;
+      lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
+      lfoDepth = 60 + 40 * Math.sin(nowMs * 0.009);
+    } else if (dragging) {
+      baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
+      gainTarget = 0.0014;
+      filterTarget = 3000;
+      lfoFreq = 5.3;
+      lfoDepth = 2.5;
+    } else {
+      const climb = Math.min(1, heldMs / 1800);
+      baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
+      gainTarget = 0.0014 + climb * 0.0014;
+      filterTarget = 3000 + climb * 1400;
+      lfoFreq = 6 + climb * 5;
+      lfoDepth = 2.5 + climb * 7;
+    }
+
+    holdTargetFreq = baseFreq;
+    holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.0045);
+
+    const t = audioCtx.currentTime;
+
+    holdOsc.frequency.cancelScheduledValues(t);
+    holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.08);
+
+    holdFilter.frequency.cancelScheduledValues(t);
+    holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.08);
+
+    holdGain.gain.cancelScheduledValues(t);
+    holdGain.gain.setTargetAtTime(gainTarget, t, 0.10);
+
+    holdLfo.frequency.cancelScheduledValues(t);
+    holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.10);
+
+    holdLfoGain.gain.cancelScheduledValues(t);
+    holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.12);
   }
-
-  ensureHoldTone();
-  if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
-
-  const frozen = isFrozenNow(nowMs);
-  const dragging = pointerIsDragging(nowMs);
-  const heldMs = nowMs - pointerDownAt;
-
-  let baseFreq;
-  let gainTarget;
-  let filterTarget;
-  let lfoFreq;
-  let lfoDepth;
-
-  if (frozen) {
-    baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
-    gainTarget = 0.014;
-    filterTarget = 4800;
-    lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
-    lfoDepth = 150 + 90 * Math.sin(nowMs * 0.009);
-  } else if (dragging) {
-    baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
-    gainTarget = 0.0032;
-    filterTarget = 2200;
-    lfoFreq = 5.3;
-    lfoDepth = 8;
-  } else {
-    const climb = Math.min(1, heldMs / 1800);
-    baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
-    gainTarget = 0.0032 + climb * 0.0024;
-    filterTarget = 2200 + climb * 1200;
-    lfoFreq = 6 + climb * 5;
-    lfoDepth = 8 + climb * 18;
-  }
-
-  holdTargetFreq = baseFreq;
-  holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.0045);
-
-  const t = audioCtx.currentTime;
-
-  holdOsc.frequency.cancelScheduledValues(t);
-  holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.08);
-
-  holdFilter.frequency.cancelScheduledValues(t);
-  holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.08);
-
-  holdGain.gain.cancelScheduledValues(t);
-  holdGain.gain.setTargetAtTime(gainTarget, t, 0.10);
-
-  holdLfo.frequency.cancelScheduledValues(t);
-  holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.10);
-
-  holdLfoGain.gain.cancelScheduledValues(t);
-  holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.12);
-}
 
   function beepTriangle() {
     const t = performance.now();
@@ -731,6 +737,168 @@
     }
   }
 
+  function boxOverlap(a, b) {
+    return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+  }
+
+  function buildBox(row, col, w, h, padding = 1) {
+    return {
+      left: col - padding,
+      right: col + w - 1 + padding,
+      top: row - padding,
+      bottom: row + h - 1 + padding
+    };
+  }
+
+  function canSpawnAnotherMessage() {
+    if (messages.length >= MAX_VISIBLE_MESSAGES) return false;
+    if (messages.length === 0) return true;
+    if (messages.length === 1) return Math.random() > PREFER_SINGLE_MESSAGE_CHANCE;
+    return false;
+  }
+
+  function spawnMessage(kind) {
+    const nowMs = performance.now();
+    if (!canSpawnAnotherMessage()) return;
+
+    const text = pickMessageWithCooldown(kind === "blue" ? blueOptions : wakeOptions, nowMs);
+    const color = lightMessageColor(kind);
+    const chosen = chooseMessageSize(text);
+
+    const nonOverlapCandidates = [];
+    const overlapCandidates = [];
+
+    if (chosen.size === 1) {
+      const w = text.length, h = 1;
+      for (let i = 0; i < 20; i++) {
+        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
+        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
+        const box = buildBox(row, col, w, h, 1);
+        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
+        const candidate = { row, col, box, lines: null, size: 1, overlapping };
+        if (!overlapping.length) nonOverlapCandidates.push(candidate);
+        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
+      }
+    } else {
+      const { size, lines, w, h } = chosen;
+      for (let i = 0; i < 20; i++) {
+        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
+        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
+        const box = buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2)));
+        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
+        const candidate = { row, col, box, lines, size, overlapping };
+        if (!overlapping.length) nonOverlapCandidates.push(candidate);
+        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
+      }
+    }
+
+    const chosenCandidate = nonOverlapCandidates.length
+      ? pick(nonOverlapCandidates)
+      : overlapCandidates.length
+        ? pick(overlapCandidates)
+        : null;
+
+    if (!chosenCandidate) return;
+
+    const msg = {
+      kind,
+      text,
+      color,
+      size: chosenCandidate.size,
+      lines: chosenCandidate.lines,
+      row: chosenCandidate.row,
+      col: chosenCandidate.col,
+      box: chosenCandidate.box,
+      ttl: kind === "blue" ? 16 + Math.floor(Math.random() * 10) : 18 + Math.floor(Math.random() * 12),
+      overlapExpireAt: null,
+      createdAt: nowMs
+    };
+
+    if (chosenCandidate.overlapping.length) {
+      msg.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
+      for (const other of chosenCandidate.overlapping) {
+        other.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
+      }
+    }
+
+    messages.push(msg);
+  }
+
+  function updateMessagesTick() {
+    const nowMs = performance.now();
+
+    for (const [key, until] of messageCooldowns.entries()) {
+      if (until <= nowMs) messageCooldowns.delete(key);
+    }
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      msg.ttl--;
+      if ((msg.overlapExpireAt && nowMs >= msg.overlapExpireAt) || msg.ttl <= 0) {
+        messages.splice(i, 1);
+      }
+    }
+
+    if (!exitOverlay) {
+      if (Math.random() < 0.017) spawnMessage("blue");
+      if (Math.random() < 0.022) spawnMessage("wake");
+    }
+  }
+
+  function angleDiff(a, b) {
+    let d = a - b;
+    while (d <= -Math.PI) d += 2 * Math.PI;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    return Math.abs(d);
+  }
+
+  function chooseExitScale(text, preferBig) {
+    const fits = scalesThatFitWrapped(text, cols - 4, Math.max(7, Math.floor(rows / 2)));
+    if (!fits.length) return { size: 1, lines: [text], w: text.length, h: 1 };
+
+    if (preferBig) {
+      const bag = [];
+      for (const f of fits) {
+        for (let i = 0; i < f.size * f.size; i++) bag.push(f);
+      }
+      return pick(bag);
+    }
+    return pick(fits);
+  }
+
+  function drawExitOverlay() {
+    resetGrid();
+
+    const warning = "WARNING: IT IS IMPOSSIBLE TO EXIT TIME";
+    const middleLine = "TIME DOES NOT STOP FOR YOU";
+    const countdownText = `RETURNING TO CLOCK IN ${Math.ceil(exitCountdown)}`;
+
+    const w1 = chooseExitScale(warning, true);
+    const wMid = chooseExitScale(middleLine, false);
+    const w2 = chooseExitScale(countdownText, false);
+
+    const totalH = w1.h + 1 + wMid.h + 2 + w2.h;
+    const r1 = Math.max(1, Math.floor((rows - totalH) / 2));
+    const c1 = Math.max(1, Math.floor((cols - w1.w) / 2));
+
+    const rMid = r1 + w1.h + 1;
+    const cMid = Math.max(1, Math.floor((cols - wMid.w) / 2));
+
+    const r2 = rMid + wMid.h + 2;
+    const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
+
+    if (w1.size === 1) drawText(r1, c1, warning, "#ff5f5f");
+    else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
+
+    if (wMid.size === 1) drawText(rMid, cMid, middleLine, "#d7dde8");
+    else renderBitmapLines(wMid.lines, wMid.size, rMid, cMid, "#d7dde8");
+
+    if (w2.size === 1) drawText(r2, c2, countdownText, "#ffffff");
+    else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
+
+    renderGrid();
+  }
+
   function snapGlitterX(x) {
     return Math.round(x / GLITTER_CELL_W) * GLITTER_CELL_W;
   }
@@ -738,11 +906,6 @@
   function snapGlitterY(y) {
     return Math.round(y / GLITTER_CELL_H) * GLITTER_CELL_H;
   }
-
-  function currentFreezeBurstStrength(nowMs = performance.now()) {
-  if (freezeBurstDecayUntil <= nowMs) return 0;
-  return Math.max(0, (freezeBurstDecayUntil - nowMs) / 15000);
-}
 
   function renderGlitter() {
     if (!glitterParticles.length) return;
@@ -933,168 +1096,6 @@
     "YOU COULD'VE DONE MORE", "THEY'RE WATCHING", "YOUR BEST FRIEND IS HIDING SOMETHING FROM YOU", "HOW LONG UNTIL THEY BETRAY YOU?",
     "DEPRESSION IS THE BYPRODUCT OF WANTING"
   ];
-
-  function boxOverlap(a, b) {
-    return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-  }
-
-  function buildBox(row, col, w, h, padding = 1) {
-    return {
-      left: col - padding,
-      right: col + w - 1 + padding,
-      top: row - padding,
-      bottom: row + h - 1 + padding
-    };
-  }
-
-  function canSpawnAnotherMessage() {
-    if (messages.length >= MAX_VISIBLE_MESSAGES) return false;
-    if (messages.length === 0) return true;
-    if (messages.length === 1) return Math.random() > PREFER_SINGLE_MESSAGE_CHANCE;
-    return false;
-  }
-
-  function spawnMessage(kind) {
-    const nowMs = performance.now();
-    if (!canSpawnAnotherMessage()) return;
-
-    const text = pickMessageWithCooldown(kind === "blue" ? blueOptions : wakeOptions, nowMs);
-    const color = lightMessageColor(kind);
-    const chosen = chooseMessageSize(text);
-
-    const nonOverlapCandidates = [];
-    const overlapCandidates = [];
-
-    if (chosen.size === 1) {
-      const w = text.length, h = 1;
-      for (let i = 0; i < 20; i++) {
-        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
-        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        const box = buildBox(row, col, w, h, 1);
-        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
-        const candidate = { row, col, box, lines: null, size: 1, overlapping };
-        if (!overlapping.length) nonOverlapCandidates.push(candidate);
-        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
-      }
-    } else {
-      const { size, lines, w, h } = chosen;
-      for (let i = 0; i < 20; i++) {
-        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
-        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        const box = buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2)));
-        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
-        const candidate = { row, col, box, lines, size, overlapping };
-        if (!overlapping.length) nonOverlapCandidates.push(candidate);
-        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
-      }
-    }
-
-    const chosenCandidate = nonOverlapCandidates.length
-      ? pick(nonOverlapCandidates)
-      : overlapCandidates.length
-        ? pick(overlapCandidates)
-        : null;
-
-    if (!chosenCandidate) return;
-
-    const msg = {
-      kind,
-      text,
-      color,
-      size: chosenCandidate.size,
-      lines: chosenCandidate.lines,
-      row: chosenCandidate.row,
-      col: chosenCandidate.col,
-      box: chosenCandidate.box,
-      ttl: kind === "blue" ? 16 + Math.floor(Math.random() * 10) : 18 + Math.floor(Math.random() * 12),
-      overlapExpireAt: null,
-      createdAt: nowMs
-    };
-
-    if (chosenCandidate.overlapping.length) {
-      msg.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
-      for (const other of chosenCandidate.overlapping) {
-        other.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
-      }
-    }
-
-    messages.push(msg);
-  }
-
-  function updateMessagesTick() {
-    const nowMs = performance.now();
-
-    for (const [key, until] of messageCooldowns.entries()) {
-      if (until <= nowMs) messageCooldowns.delete(key);
-    }
-
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      msg.ttl--;
-      if ((msg.overlapExpireAt && nowMs >= msg.overlapExpireAt) || msg.ttl <= 0) {
-        messages.splice(i, 1);
-      }
-    }
-
-    if (!exitOverlay) {
-      if (Math.random() < 0.017) spawnMessage("blue");
-      if (Math.random() < 0.022) spawnMessage("wake");
-    }
-  }
-
-  function angleDiff(a, b) {
-    let d = a - b;
-    while (d <= -Math.PI) d += 2 * Math.PI;
-    while (d > Math.PI) d -= 2 * Math.PI;
-    return Math.abs(d);
-  }
-
-  function chooseExitScale(text, preferBig) {
-    const fits = scalesThatFitWrapped(text, cols - 4, Math.max(7, Math.floor(rows / 2)));
-    if (!fits.length) return { size: 1, lines: [text], w: text.length, h: 1 };
-
-    if (preferBig) {
-      const bag = [];
-      for (const f of fits) {
-        for (let i = 0; i < f.size * f.size; i++) bag.push(f);
-      }
-      return pick(bag);
-    }
-    return pick(fits);
-  }
-
-  function drawExitOverlay() {
-    resetGrid();
-
-    const warning = "WARNING: IT IS IMPOSSIBLE TO EXIT TIME";
-    const middleLine = "TIME DOES NOT STOP FOR YOU";
-    const countdownText = `RETURNING TO CLOCK IN ${Math.ceil(exitCountdown)}`;
-
-    const w1 = chooseExitScale(warning, true);
-    const wMid = chooseExitScale(middleLine, false);
-    const w2 = chooseExitScale(countdownText, false);
-
-    const totalH = w1.h + 1 + wMid.h + 2 + w2.h;
-    const r1 = Math.max(1, Math.floor((rows - totalH) / 2));
-    const c1 = Math.max(1, Math.floor((cols - w1.w) / 2));
-
-    const rMid = r1 + w1.h + 1;
-    const cMid = Math.max(1, Math.floor((cols - wMid.w) / 2));
-
-    const r2 = rMid + wMid.h + 2;
-    const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
-
-    if (w1.size === 1) drawText(r1, c1, warning, "#ff5f5f");
-    else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
-
-    if (wMid.size === 1) drawText(rMid, cMid, middleLine, "#d7dde8");
-    else renderBitmapLines(wMid.lines, wMid.size, rMid, cMid, "#d7dde8");
-
-    if (w2.size === 1) drawText(r2, c2, countdownText, "#ffffff");
-    else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
-
-    renderGrid();
-  }
 
   function spawnGlitterBurst(px, py, opts = {}) {
     const {

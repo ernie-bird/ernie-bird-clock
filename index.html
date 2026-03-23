@@ -295,42 +295,42 @@
     osc.stop(now + duration + 0.01);
   }
 
-  function ensureHoldTone() {
-    if (muted) return;
-    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
-    if (holdOsc) return;
+ function ensureHoldTone() {
+  if (muted) return;
+  if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+  if (holdOsc) return;
 
-    const now = audioCtx.currentTime;
+  const now = audioCtx.currentTime;
 
-    holdOsc = audioCtx.createOscillator();
-    holdGain = audioCtx.createGain();
-    holdFilter = audioCtx.createBiquadFilter();
-    holdLfo = audioCtx.createOscillator();
-    holdLfoGain = audioCtx.createGain();
+  holdOsc = audioCtx.createOscillator();
+  holdGain = audioCtx.createGain();
+  holdFilter = audioCtx.createBiquadFilter();
+  holdLfo = audioCtx.createOscillator();
+  holdLfoGain = audioCtx.createGain();
 
-    holdOsc.type = "triangle";
-    holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
+  holdOsc.type = "sine";
+  holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
 
-    holdFilter.type = "highpass";
-    holdFilter.frequency.setValueAtTime(1200, now);
+  holdFilter.type = "highpass";
+  holdFilter.frequency.setValueAtTime(1800, now);
 
-    holdLfo.type = "sine";
-    holdLfo.frequency.setValueAtTime(4.5, now);
-    holdLfoGain.gain.setValueAtTime(8, now);
+  holdLfo.type = "sine";
+  holdLfo.frequency.setValueAtTime(4.5, now);
+  holdLfoGain.gain.setValueAtTime(2, now);
 
-    holdLfo.connect(holdLfoGain);
-    holdLfoGain.connect(holdOsc.frequency);
+  holdLfo.connect(holdLfoGain);
+  holdLfoGain.connect(holdOsc.frequency);
 
-    holdGain.gain.setValueAtTime(0.0001, now);
-    holdGain.gain.exponentialRampToValueAtTime(0.005, now + 0.04);
+  holdGain.gain.setValueAtTime(0.0001, now);
+  holdGain.gain.exponentialRampToValueAtTime(0.0025, now + 0.18);
 
-    holdOsc.connect(holdFilter);
-    holdFilter.connect(holdGain);
-    holdGain.connect(masterGain);
+  holdOsc.connect(holdFilter);
+  holdFilter.connect(holdGain);
+  holdGain.connect(masterGain);
 
-    holdOsc.start(now);
-    holdLfo.start(now);
-  }
+  holdOsc.start(now);
+  holdLfo.start(now);
+}
 
   function stopHoldTone() {
     if (!holdOsc || !audioCtx) return;
@@ -351,66 +351,66 @@
     holdCurrentFreq = 1180;
   }
 
-  function updateHoldTone(nowMs, dtMs) {
-    if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
-      stopHoldTone();
-      return;
-    }
-
-    ensureHoldTone();
-    if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
-
-    const frozen = isFrozenNow(nowMs);
-    const dragging = pointerIsDragging(nowMs);
-    const heldMs = nowMs - pointerDownAt;
-
-    let baseFreq;
-    let gainTarget;
-    let filterTarget;
-    let lfoFreq;
-    let lfoDepth;
-
-    if (frozen) {
-      baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
-      gainTarget = 0.018;
-      filterTarget = 4200;
-      lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
-      lfoDepth = 150 + 90 * Math.sin(nowMs * 0.009);
-    } else if (dragging) {
-      baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
-      gainTarget = 0.0048;
-      filterTarget = 1650;
-      lfoFreq = 5.3;
-      lfoDepth = 8;
-    } else {
-      const climb = Math.min(1, heldMs / 1800);
-      baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
-      gainTarget = 0.0048 + climb * 0.0035;
-      filterTarget = 1550 + climb * 900;
-      lfoFreq = 6 + climb * 5;
-      lfoDepth = 8 + climb * 18;
-    }
-
-    holdTargetFreq = baseFreq;
-    holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.010);
-
-    const t = audioCtx.currentTime;
-
-    holdOsc.frequency.cancelScheduledValues(t);
-    holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.03);
-
-    holdFilter.frequency.cancelScheduledValues(t);
-    holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.03);
-
-    holdGain.gain.cancelScheduledValues(t);
-    holdGain.gain.setTargetAtTime(gainTarget, t, 0.03);
-
-    holdLfo.frequency.cancelScheduledValues(t);
-    holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.03);
-
-    holdLfoGain.gain.cancelScheduledValues(t);
-    holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.03);
+ function updateHoldTone(nowMs, dtMs) {
+  if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
+    stopHoldTone();
+    return;
   }
+
+  ensureHoldTone();
+  if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
+
+  const frozen = isFrozenNow(nowMs);
+  const dragging = pointerIsDragging(nowMs);
+  const heldMs = nowMs - pointerDownAt;
+
+  let baseFreq;
+  let gainTarget;
+  let filterTarget;
+  let lfoFreq;
+  let lfoDepth;
+
+  if (frozen) {
+    baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
+    gainTarget = 0.014;
+    filterTarget = 4800;
+    lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
+    lfoDepth = 150 + 90 * Math.sin(nowMs * 0.009);
+  } else if (dragging) {
+    baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
+    gainTarget = 0.0032;
+    filterTarget = 2200;
+    lfoFreq = 5.3;
+    lfoDepth = 8;
+  } else {
+    const climb = Math.min(1, heldMs / 1800);
+    baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
+    gainTarget = 0.0032 + climb * 0.0024;
+    filterTarget = 2200 + climb * 1200;
+    lfoFreq = 6 + climb * 5;
+    lfoDepth = 8 + climb * 18;
+  }
+
+  holdTargetFreq = baseFreq;
+  holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.0045);
+
+  const t = audioCtx.currentTime;
+
+  holdOsc.frequency.cancelScheduledValues(t);
+  holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.08);
+
+  holdFilter.frequency.cancelScheduledValues(t);
+  holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.08);
+
+  holdGain.gain.cancelScheduledValues(t);
+  holdGain.gain.setTargetAtTime(gainTarget, t, 0.10);
+
+  holdLfo.frequency.cancelScheduledValues(t);
+  holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.10);
+
+  holdLfoGain.gain.cancelScheduledValues(t);
+  holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.12);
+}
 
   function beepTriangle() {
     const t = performance.now();

@@ -51,6 +51,16 @@
     #tapHint.hidden {
       display: none;
     }
+  </style>
+</head>
+<body>
+  <div id="controls">
+    <button id="muteBtn">Mute (m)</button>
+    <button id="exitBtn">Exit (esc)</button>
+    <span id="tapHint">tap anywhere for sound</span>
+  </div>
+
+  <canvas id="screen"></canvas>
  <script>
 (() => {
   const canvas = document.getElementById("screen");

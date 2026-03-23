@@ -75,6 +75,7 @@
   let cellW = 12, cellH = 20, cols = 80, rows = 30;
 
   const BACKGROUND = "#000814";
+  const VISUAL_Y_SCALE = 0.90;
 
   let muted = false;
   let lastError = null;
@@ -83,21 +84,112 @@
   let lastFrameTime = performance.now();
   let accumulator = 0;
 
+  const GLITTER_HZ = 24;
+  const GLITTER_TICK_MS = 1000 / GLITTER_HZ;
+  let glitterAccumulator = 0;
+
   let exitOverlay = false;
   let exitCountdown = 10.0;
 
   let audioCtx = null;
   let audioReady = false;
+  let masterGain = null;
+  let ambientGain = null;
+  let ambientOscA = null;
+  let ambientOscB = null;
+
   let lastTriangleBeep = 0;
   let lastCircleBeep = 0;
+  let lastGlitterBeep = 0;
+  let lastFreezeBeep = 0;
+
+  let freezeUntil = 0;
+  let frozenClockDate = null;
+  let nextFreezeAt = performance.now() + 12000 + Math.random() * 18000;
+
+  let pointerIsDown = false;
+  let lastPointerSpawn = 0;
+  let pointerX = 0;
+  let pointerY = 0;
+
+  const glitterParticles = [];
+  const secondTrail = [];
+  const messages = [];
+  const triangles = [];
+
+  const LIGHT_TEXT = ["#f7f9fb", "#f5f7fa", "#eef2f7", "#ffffff", "#f0f8ff", "#fff7d6", "#dff6ff", "#e8f1ff"];
+  const SPARKLE = ["#ffffff", "#fff8cc", "#ffe066", "#9bf6ff", "#bdb2ff", "#a0e7e5", "#f1fa8c"];
+  const BLUE_MSG = ["#7dd3fc", "#67e8f9", "#93c5fd", "#a5f3fc", "#bfdbfe", "#c4b5fd"];
+  const WAKE_MSG = ["#ffffff", "#f8fafc", "#fde68a", "#fef3c7", "#d1fae5", "#e9d5ff", "#fbcfe8"];
+  const CLOCK_WHITE = ["#ffffff", "#fcfcfc", "#fafafa", "#f7f7f7", "#f4f4f4", "#f1f1f1"];
+
+  function pick(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+  }
+
+  function lightMessageColor(kind = "wake") {
+    return kind === "blue" ? pick(BLUE_MSG) : pick(WAKE_MSG);
+  }
+
+  function pickClockWhite() {
+    const r = Math.random();
+    if (r < 0.010) return "#e9e9e9";
+    if (r < 0.040) return "#f2f2f2";
+    return pick(CLOCK_WHITE);
+  }
 
   function updateButtons() {
     muteBtn.textContent = muted ? "Unmute (m)" : "Mute (m)";
   }
 
   function markAudioReady() {
-    audioReady = true;
-    tapHint.classList.add("hidden");
+    if (!audioReady) {
+      audioReady = true;
+      tapHint.classList.add("hidden");
+    }
+  }
+
+  function createMasterGain() {
+    if (!audioCtx || masterGain) return;
+
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = muted ? 0 : 0.9;
+    masterGain.connect(audioCtx.destination);
+
+    ambientGain = audioCtx.createGain();
+    ambientGain.gain.value = 0.0001;
+    ambientGain.connect(masterGain);
+  }
+
+  function startAmbient() {
+    if (!audioCtx || !ambientGain) return;
+    if (ambientOscA || ambientOscB) return;
+
+    const now = audioCtx.currentTime;
+
+    ambientOscA = audioCtx.createOscillator();
+    ambientOscB = audioCtx.createOscillator();
+
+    const lp = audioCtx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 850;
+
+    ambientOscA.type = "triangle";
+    ambientOscB.type = "sine";
+
+    ambientOscA.frequency.setValueAtTime(66, now);
+    ambientOscB.frequency.setValueAtTime(91, now);
+
+    ambientOscA.connect(lp);
+    ambientOscB.connect(lp);
+    lp.connect(ambientGain);
+
+    ambientOscA.start(now);
+    ambientOscB.start(now);
+
+    ambientGain.gain.cancelScheduledValues(now);
+    ambientGain.gain.setValueAtTime(0.0001, now);
+    ambientGain.gain.exponentialRampToValueAtTime(0.012, now + 1.2);
   }
 
   async function ensureAudio() {
@@ -110,6 +202,8 @@
         await audioCtx.resume();
       }
       if (audioCtx && audioCtx.state === "running") {
+        createMasterGain();
+        startAmbient();
         markAudioReady();
       }
     } catch (e) {
@@ -117,15 +211,27 @@
     }
   }
 
-  function playTone(freq = 440, duration = 0.05, volume = 0.03) {
+  function setMuteState(nextMuted) {
+    muted = nextMuted;
+    updateButtons();
+
+    if (masterGain && audioCtx) {
+      const now = audioCtx.currentTime;
+      masterGain.gain.cancelScheduledValues(now);
+      masterGain.gain.setValueAtTime(masterGain.gain.value, now);
+      masterGain.gain.linearRampToValueAtTime(muted ? 0.0 : 0.9, now + 0.06);
+    }
+  }
+
+  function playTone(freq = 440, duration = 0.05, volume = 0.03, type = "sine") {
     if (muted) return;
-    if (!audioCtx || audioCtx.state !== "running") return;
+    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
 
     const now = audioCtx.currentTime;
     const osc = audioCtx.createOscillator();
     const gain = audioCtx.createGain();
 
-    osc.type = "sine";
+    osc.type = type;
     osc.frequency.value = freq;
 
     gain.gain.setValueAtTime(0.0001, now);
@@ -133,7 +239,7 @@
     gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
 
     osc.connect(gain);
-    gain.connect(audioCtx.destination);
+    gain.connect(masterGain);
     osc.start(now);
     osc.stop(now + duration + 0.01);
   }
@@ -142,27 +248,73 @@
     const t = performance.now();
     if (t - lastTriangleBeep < 50) return;
     lastTriangleBeep = t;
-    playTone(880, 0.045, 0.025);
+    playTone(880, 0.045, 0.025, "sine");
   }
 
   function beepCircle() {
     const t = performance.now();
     if (t - lastCircleBeep < 40) return;
     lastCircleBeep = t;
-    playTone(540, 0.05, 0.02);
+    playTone(540, 0.05, 0.02, "sine");
   }
 
-  const LIGHT_TEXT = ["#f7f9fb", "#f5f7fa", "#eef2f7", "#ffffff", "#f0f8ff", "#fff7d6", "#dff6ff", "#e8f1ff"];
-  const SPARKLE = ["#ffffff", "#fff8cc", "#ffe066", "#9bf6ff", "#bdb2ff", "#a0e7e5", "#f1fa8c"];
-  const BLUE_MSG = ["#7dd3fc", "#67e8f9", "#93c5fd", "#a5f3fc", "#bfdbfe", "#c4b5fd"];
-  const WAKE_MSG = ["#ffffff", "#f8fafc", "#fde68a", "#fef3c7", "#d1fae5", "#e9d5ff", "#fbcfe8"];
+  function beepGlitter() {
+    const t = performance.now();
+    if (t - lastGlitterBeep < 24) return;
+    lastGlitterBeep = t;
 
-  function pick(arr) {
-    return arr[Math.floor(Math.random() * arr.length)];
+    if (muted) return;
+    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+
+    osc.type = "triangle";
+    osc.frequency.setValueAtTime(1400 + Math.random() * 1000, now);
+    osc.frequency.exponentialRampToValueAtTime(2200 + Math.random() * 1800, now + 0.06);
+
+    filter.type = "highpass";
+    filter.frequency.setValueAtTime(1200, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.018, now + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.09);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterGain);
+
+    osc.start(now);
+    osc.stop(now + 0.1);
   }
 
-  function lightMessageColor(kind = "wake") {
-    return kind === "blue" ? pick(BLUE_MSG) : pick(WAKE_MSG);
+  function beepFreeze() {
+    const t = performance.now();
+    if (t - lastFreezeBeep < 500) return;
+    lastFreezeBeep = t;
+
+    if (muted) return;
+    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(420, now);
+    osc.frequency.exponentialRampToValueAtTime(160, now + 0.18);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.03, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+
+    osc.connect(gain);
+    gain.connect(masterGain);
+
+    osc.start(now);
+    osc.stop(now + 0.22);
   }
 
   const FONT = {
@@ -336,6 +488,24 @@
     }
   }
 
+  function renderGlitter() {
+    if (!glitterParticles.length) return;
+
+    ctx.save();
+    ctx.textBaseline = "top";
+    ctx.font = `${Math.floor(cellH * 0.92)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
+
+    for (const p of glitterParticles) {
+      const alpha = Math.max(0, Math.min(1, p.life / p.maxLife));
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = p.color;
+      ctx.fillText(p.glyph, p.x, p.y);
+    }
+
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
   function drawErrorOverlay(err) {
     ctx.fillStyle = BACKGROUND;
     ctx.fillRect(0, 0, W, H);
@@ -372,7 +542,6 @@
   window.addEventListener("resize", resize);
   resize();
 
-  const triangles = [];
   function initTriangles() {
     triangles.length = 0;
     for (let i = 0; i < 16; i++) {
@@ -418,7 +587,7 @@
 
     for (const t of triangles) {
       const dxPx = (t.x - cx) * cellW;
-      const dyPx = (t.y - cy) * cellH;
+      const dyPx = (t.y - cy) * cellH * VISUAL_Y_SCALE;
       const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
       const onRingNow = Math.abs(distPx - radiusPx) < Math.max(cellW, cellH) * 0.75;
 
@@ -432,12 +601,10 @@
     }
   }
 
-  const messages = [];
-
   const blueOptions = [
     "NO SIGNAL", "PHASE ISSUE", "CLOCK DESYNC",
     "TIME ERROR", "WRONG SECOND",
-   "DANGEROUS FREQUENCY", "PARASITIC TICK",
+    "DANGEROUS FREQUENCY", "PARASITIC TICK",
     "THE PORTAL IS OPEN", "CHRONO BLEED", "INITIALIZING CLOUDS", "WRONG DECISION", "THIS CLOCK WON'T RUN MUCH LONGER",
     "YOU'RE WASTING TIME", "TIME NOT FOUND", "STOP!", "GET HELP", "THIS ISN'T RIGHT"
   ];
@@ -456,20 +623,20 @@
     "IF THIS ISN'T REAL",
     "SOMETHING IS AWAKE BEHIND THE CLOCK", "YOUR MEMORY HAS GAPS",
     "YOU ARE NOT LOOKING AT A CLOCK",
-     "STOP TRUSTING HIM",
+    "STOP TRUSTING HIM",
     "SOMEONE ELSE IS SEEING THIS WITH YOU", "YOU ONLY THINK YOU WOKE UP",
     "COUNT BACKWARDS UNTIL YOU CAN'T", "THIS HAS HAPPENED MANY TIMES",
-     "THERE IS NO OUTSIDE",
+    "THERE IS NO OUTSIDE",
     "IT ONLY MOVES WHEN YOU BLINK", "THAT SOUND IS NOT FROM THE CLOCK", "YOU'RE NOT HEARING ANYTHING",
-    "YOU ARE ONE SECOND BEHIND YOURSELF", "YOUR REFLECTION ARRIVED FIRST", "YOU HAVE ENEMIES YOU'RE UNAWARE OF", 
-    "CAN YOU HEAR SCREAMING?", "YOU SHOULD'VE DONE THIS", "YOU SHOULD'VE QUIT WHEN THE JOB MARKET WAS GOOD", 
+    "YOU ARE ONE SECOND BEHIND YOURSELF", "YOUR REFLECTION ARRIVED FIRST", "YOU HAVE ENEMIES YOU'RE UNAWARE OF",
+    "CAN YOU HEAR THE SCREAMING", "YOU SHOULD'VE DONE THIS", "YOU SHOULD'VE QUIT WHEN THE JOB MARKET WAS GOOD",
     "PANCE PONY IS A REAL PERSON WHO WRITES BROADWAY MUSICALS", "THEY'RE TIRED OF YOU",
-    "HAVE YOU DONE ALL YOU COULD?", "90% OF EVERYTHING PEOPLE SAY IS BULLSH*T", "AH, TO BE 25 AGAIN", 
-    "HAPPINESS WILL PASS", "SUFFERING IS A CHOICE", "USSR STILL EXISTS...", "ALIENS ARE NOT IMPRESSED BY US", 
-    "YOU HAD TOO MUCH WINE", "TIME TO THINK ABOUT REGRETS", "IF YOU DON'T RUIN IT, SOMEONE ELSE WILL", 
+    "HAVE YOU DONE ALL YOU COULD?", "90% OF EVERYTHING PEOPLE SAY IS BULLSH*T", "AH, TO BE 25 AGAIN",
+    "HAPPINESS WILL PASS", "SUFFERING IS A CHOICE", "USSR STILL EXISTS...", "ALIENS ARE NOT IMPRESSED BY US",
+    "YOU HAD TOO MUCH WINE", "TIME TO THINK ABOUT REGRETS", "IF YOU DON'T RUIN IT, SOMEONE ELSE WILL",
     "JUST BECAUSE YOU'RE NOT A PSYCHOPATH, DOESN'T MEAN YOU'RE A GOOD PERSON", "HAVE YOU READ DOSTOYEVSKY?",
-    "SLAVOJ ŽIŽEK IS YOUR ONLY HOPE", "YOUR THERAPIST IS RIPPING YOU OFF", "ВІЙНА ЗАКІНЧИТЬСЯ ЧЕРЕЗ ДВА [ДНІ/ТИЖНІ/РОКИ/ДЕСЯТИЛІТТЯ/СТОЛІТТЯ]", 
-    "YOU COULD'VE DONE MORE", "THEY'RE WATCHING", "YOUR BEST FRIEND IS HIDING SOMETHING FROM YOU", "HOW LONG UNTIL THEY BETRAY YOU?", 
+    "SLAVOJ ŽIŽEK IS YOUR ONLY HOPE", "YOUR THERAPIST IS RIPPING YOU OFF", "ВІЙНА ЗАКІНЧИТЬСЯ ЧЕРЕЗ ДВА [ДНІ/ТИЖНІ/РОКИ/ДЕСЯТИЛІТТЯ/СТОЛІТТЯ]",
+    "YOU COULD'VE DONE MORE", "THEY'RE WATCHING", "YOUR BEST FRIEND IS HIDING SOMETHING FROM YOU", "HOW LONG UNTIL THEY BETRAY YOU?",
     "DEPRESSION IS THE BYPRODUCT OF WANTING"
   ];
 
@@ -545,8 +712,6 @@
     }
   }
 
-  const secondTrail = [];
-
   function angleDiff(a, b) {
     let d = a - b;
     while (d <= -Math.PI) d += 2 * Math.PI;
@@ -572,19 +737,28 @@
     resetGrid();
 
     const warning = "WARNING: IT IS IMPOSSIBLE TO EXIT TIME";
+    const middleLine = "TIME DOES NOT STOP FOR YOU";
     const countdownText = `RETURNING TO CLOCK IN ${Math.ceil(exitCountdown)}`;
 
     const w1 = chooseExitScale(warning, true);
+    const wMid = chooseExitScale(middleLine, false);
     const w2 = chooseExitScale(countdownText, false);
 
-    const totalH = w1.h + 2 + w2.h;
+    const totalH = w1.h + 1 + wMid.h + 2 + w2.h;
     const r1 = Math.max(1, Math.floor((rows - totalH) / 2));
     const c1 = Math.max(1, Math.floor((cols - w1.w) / 2));
-    const r2 = r1 + w1.h + 2;
+
+    const rMid = r1 + w1.h + 1;
+    const cMid = Math.max(1, Math.floor((cols - wMid.w) / 2));
+
+    const r2 = rMid + wMid.h + 2;
     const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
 
     if (w1.size === 1) drawText(r1, c1, warning, "#ff5f5f");
     else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
+
+    if (wMid.size === 1) drawText(rMid, cMid, middleLine, "#d7dde8");
+    else renderBitmapLines(wMid.lines, wMid.size, rMid, cMid, "#d7dde8");
 
     if (w2.size === 1) drawText(r2, c2, countdownText, "#ffffff");
     else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
@@ -592,7 +766,61 @@
     renderGrid();
   }
 
-  function updateSimulationTick() {
+  function spawnGlitterBurst(px, py, intensity = 1) {
+    const count = Math.floor(8 + Math.random() * 10 * intensity);
+
+    for (let i = 0; i < count; i++) {
+      const maxLife = 0.22 + Math.random() * 0.45;
+      const ang = Math.random() * Math.PI * 2;
+      const speed = 35 + Math.random() * 140;
+
+      glitterParticles.push({
+        x: px,
+        y: py,
+        vx: Math.cos(ang) * speed,
+        vy: Math.sin(ang) * speed - Math.random() * 25,
+        life: maxLife,
+        maxLife,
+        glyph: pick(["·", "•", "✦", "✧", "*", "+"]),
+        color: pick(["#ffffff", "#f8fafc", "#fde68a", "#e9d5ff", "#fbcfe8", "#dbeafe"])
+      });
+    }
+
+    beepGlitter();
+  }
+
+  function updateGlitter(dtMs) {
+    const dt = dtMs / 1000;
+
+    for (let i = glitterParticles.length - 1; i >= 0; i--) {
+      const p = glitterParticles[i];
+      p.life -= dt;
+      if (p.life <= 0) {
+        glitterParticles.splice(i, 1);
+        continue;
+      }
+
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.vy += 180 * dt;
+      p.vx *= 0.985;
+      p.vy *= 0.99;
+    }
+  }
+
+  function maybeTriggerFreeze(nowMs) {
+    if (exitOverlay) return;
+    if (freezeUntil > nowMs) return;
+
+    if (nowMs >= nextFreezeAt) {
+      freezeUntil = nowMs + 1000;
+      frozenClockDate = new Date();
+      nextFreezeAt = nowMs + 12000 + Math.random() * 24000;
+      beepFreeze();
+    }
+  }
+
+  function updateSimulationTick(clockNow = null) {
     if (exitOverlay) {
       exitCountdown -= TICK_MS / 1000;
       if (exitCountdown <= 0) {
@@ -604,7 +832,7 @@
 
     updateMessagesTick();
 
-    const now = new Date();
+    const now = clockNow || new Date();
     const cx = Math.floor(cols / 2);
     const cy = Math.floor(rows / 2);
     const radiusPx = Math.max(
@@ -623,10 +851,10 @@
     updateTriangles(cols, rows, cx, cy, radiusPx);
   }
 
-  function renderClock() {
+  function renderClock(forcedNow = null) {
     resetGrid();
 
-    const now = new Date();
+    const now = forcedNow || new Date();
     const cx = Math.floor(cols / 2);
     const cy = Math.floor(rows / 2);
     const radiusPx = Math.max(
@@ -642,9 +870,9 @@
     const minA = minute / 60 * 2 * Math.PI - Math.PI / 2;
     const hourA = hour / 12 * 2 * Math.PI - Math.PI / 2;
 
-    const circleColor = pick(LIGHT_TEXT);
-    const minuteColor = pick(LIGHT_TEXT);
-    const hourColor = pick(LIGHT_TEXT);
+    const circleColor = pickClockWhite();
+    const minuteColor = pickClockWhite();
+    const hourColor = pickClockWhite();
 
     const hourLenPx = radiusPx * 0.50;
     const minuteLenPx = radiusPx * 0.84;
@@ -653,7 +881,7 @@
     for (let y = 0; y < rows; y++) {
       for (let x = 0; x < cols; x++) {
         const dxPx = (x - cx) * cellW;
-        const dyPx = (y - cy) * cellH;
+        const dyPx = (y - cy) * cellH * VISUAL_Y_SCALE;
         const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
         const ang = Math.atan2(dyPx, dxPx);
 
@@ -697,15 +925,36 @@
     try {
       const dt = now - lastFrameTime;
       lastFrameTime = now;
-      accumulator += dt;
 
-      while (accumulator >= TICK_MS) {
-        updateSimulationTick();
-        accumulator -= TICK_MS;
+      maybeTriggerFreeze(now);
+
+      glitterAccumulator += dt;
+      while (glitterAccumulator >= GLITTER_TICK_MS) {
+        updateGlitter(GLITTER_TICK_MS);
+        glitterAccumulator -= GLITTER_TICK_MS;
       }
 
-      if (exitOverlay) drawExitOverlay();
-      else renderClock();
+      const frozen = freezeUntil > now;
+
+      if (!frozen) {
+        accumulator += dt;
+        while (accumulator >= TICK_MS) {
+          updateSimulationTick();
+          accumulator -= TICK_MS;
+        }
+      }
+
+      if (exitOverlay) {
+        drawExitOverlay();
+      } else {
+        renderClock(frozen ? frozenClockDate : null);
+      }
+
+      renderGlitter();
+
+      if (!frozen && freezeUntil <= now) {
+        frozenClockDate = null;
+      }
 
       requestAnimationFrame(frame);
     } catch (err) {
@@ -721,12 +970,43 @@
     exitCountdown = 10.0;
   }
 
+  function pointerEventPos(e) {
+    return { x: e.clientX, y: e.clientY };
+  }
+
+  function handlePointerDown(e) {
+    ensureAudio();
+    pointerIsDown = true;
+    const p = pointerEventPos(e);
+    pointerX = p.x;
+    pointerY = p.y;
+    lastPointerSpawn = performance.now();
+    spawnGlitterBurst(pointerX, pointerY, 1.25);
+  }
+
+  function handlePointerMove(e) {
+    const p = pointerEventPos(e);
+    pointerX = p.x;
+    pointerY = p.y;
+
+    if (!pointerIsDown) return;
+
+    const now = performance.now();
+    if (now - lastPointerSpawn >= 1000 / GLITTER_HZ) {
+      lastPointerSpawn = now;
+      spawnGlitterBurst(pointerX, pointerY, 0.35);
+    }
+  }
+
+  function handlePointerUp() {
+    pointerIsDown = false;
+  }
+
   muteBtn.addEventListener("pointerdown", ensureAudio);
   exitBtn.addEventListener("pointerdown", ensureAudio);
 
   muteBtn.addEventListener("click", () => {
-    muted = !muted;
-    updateButtons();
+    setMuteState(!muted);
   });
 
   exitBtn.addEventListener("click", () => {
@@ -738,15 +1018,16 @@
     const k = e.key.toLowerCase();
 
     if (k === "m") {
-      muted = !muted;
-      updateButtons();
+      setMuteState(!muted);
     } else if (e.key === "Escape") {
       triggerExitOverlay();
     }
   });
 
-  // Keep trying on every interaction until audio is actually unlocked.
-  window.addEventListener("pointerdown", ensureAudio);
+  window.addEventListener("pointerdown", handlePointerDown);
+  window.addEventListener("pointermove", handlePointerMove);
+  window.addEventListener("pointerup", handlePointerUp);
+  window.addEventListener("pointercancel", handlePointerUp);
   window.addEventListener("touchstart", ensureAudio, { passive: true });
   window.addEventListener("mousedown", ensureAudio);
   window.addEventListener("click", ensureAudio);

@@ -215,35 +215,8 @@
     ambientGain.connect(masterGain);
   }
 
-  function startAmbient() {
-  if (!audioCtx || !ambientGain) return;
-  if (ambientOscA || ambientOscB) return;
-
-  const now = audioCtx.currentTime;
-
-  ambientOscA = audioCtx.createOscillator();
-  ambientOscB = audioCtx.createOscillator();
-
-  const hp = audioCtx.createBiquadFilter();
-  hp.type = "highpass";
-  hp.frequency.value = 1800;
-
-  ambientOscA.type = "triangle";
-  ambientOscB.type = "sine";
-
-  ambientOscA.frequency.setValueAtTime(2200, now);
-  ambientOscB.frequency.setValueAtTime(3100, now);
-
-  ambientOscA.connect(hp);
-  ambientOscB.connect(hp);
-  hp.connect(ambientGain);
-
-  ambientOscA.start(now);
-  ambientOscB.start(now);
-
-  ambientGain.gain.cancelScheduledValues(now);
-  ambientGain.gain.setValueAtTime(0.0001, now);
-  ambientGain.gain.exponentialRampToValueAtTime(0.0025, now + 1.2);
+function startAmbient() {
+  // ambient disabled
 }
 
   async function ensureAudio() {

@@ -57,7 +57,7 @@
   <div id="controls">
     <button id="muteBtn" type="button">Mute (m)</button>
     <button id="exitBtn" type="button">Exit (esc)</button>
-    <div id="tapHint">tap for sound</div>
+    <div id="tapHint">Tap for sound</div>
   </div>
 
   <canvas id="screen"></canvas>
@@ -452,7 +452,7 @@
     "WHO TOLD YOU THIS WAS REAL?", "WHY DOES TIME NEED A FACE?",
     "YOU HAVE BEEN HERE BEFORE", "THIS ROOM REMEMBERS YOU",
     "THE SECOND HAND IS WATCHING YOU", "WHOSE TIME IS THIS?",
-    "IF THIS IS REAL WHY DOES IT REPEAT?", "THE WALLS ARE KEEPING COUNT",
+    "IF THIS IS REAL, WHY DOES IT REPEAT?", "THE WALLS ARE KEEPING COUNT",
     "SOMETHING IS AWAKE BEHIND THE CLOCK", "YOUR MEMORY HAS GAPS",
     "YOU ARE NOT LOOKING AT A CLOCK", "THE ROOM IS PRETENDING",
     "THE SHAPE OF TIME IS WRONG", "STOP TRUSTING THE NUMBERS",
@@ -561,7 +561,7 @@
   function drawExitOverlay() {
     resetGrid();
 
-    const warning = "WARNING IT IS IMPOSSIBLE TO EXIT TIME";
+    const warning = "WARNING: IT IS IMPOSSIBLE TO EXIT TIME";
     const countdownText = `RETURNING TO CLOCK IN ${Math.ceil(exitCountdown)}`;
 
     const w1 = chooseExitScale(warning, true);
@@ -735,9 +735,11 @@
     }
   });
 
-  window.addEventListener("pointerdown", ensureAudio, { once: true });
-  window.addEventListener("touchstart", ensureAudio, { once: true, passive: true });
-  window.addEventListener("mousedown", ensureAudio, { once: true });
+  // Keep trying on every interaction until audio is actually unlocked.
+  window.addEventListener("pointerdown", ensureAudio);
+  window.addEventListener("touchstart", ensureAudio, { passive: true });
+  window.addEventListener("mousedown", ensureAudio);
+  window.addEventListener("click", ensureAudio);
 
   initTriangles();
   updateButtons();

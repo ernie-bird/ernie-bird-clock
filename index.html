@@ -38,6 +38,7 @@
   let muted = false;
   let exitArmed = false;
   let hardStopped = false;
+  let lastError = null;
 
   let audioCtx = null;
   let lastTriangleBeep = 0;
@@ -98,8 +99,7 @@
   }
 
   function lightMessageColor(kind = "wake") {
-    if (kind === "blue") return pick(BLUE_MSG);
-    return pick(WAKE_MSG);
+    return kind === "blue" ? pick(BLUE_MSG) : pick(WAKE_MSG);
   }
 
   const FONT = {
@@ -277,6 +277,21 @@
         ctx.fillStyle = gridColors[r][c];
         ctx.fillText(ch, c * cellW, r * cellH);
       }
+    }
+  }
+
+  function drawErrorOverlay(err) {
+    ctx.fillStyle = BACKGROUND;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#ff6b6b";
+    ctx.font = `20px ui-monospace, monospace`;
+    ctx.fillText("Clock error:", 20, 20);
+    ctx.fillStyle = "#ffffff";
+    ctx.font = `16px ui-monospace, monospace`;
+    const text = String(err && err.stack ? err.stack : err);
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      ctx.fillText(lines[i], 20, 55 + i * 20);
     }
   }
 
@@ -488,7 +503,7 @@
 
   function chooseExitScale(text, preferBig) {
     const fits = scalesThatFitWrapped(text, cols - 4, Math.max(7, Math.floor(rows / 2)));
-    if (!fits.length) return { s: 1, lines: [text], w: text.length, h: 1 };
+    if (!fits.length) return { size: 1, lines: [text], w: text.length, h: 1 };
 
     if (preferBig) {
       const bag = [];
@@ -515,89 +530,95 @@
     const r2 = r1 + w1.h + 2;
     const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
 
-    if (w1.s === 1) drawText(r1, c1, warning, "#ff5f5f");
+    if (w1.size === 1) drawText(r1, c1, warning, "#ff5f5f");
     else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
 
-    if (w2.s === 1) drawText(r2, c2, prompt, "#ffffff");
+    if (w2.size === 1) drawText(r2, c2, prompt, "#ffffff");
     else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
 
     renderGrid();
   }
 
   function frame() {
-    if (!running) return;
+    try {
+      if (!running) return;
 
-    if (hardStopped) {
-      drawExitScreen();
+      if (hardStopped) {
+        drawExitScreen();
+        requestAnimationFrame(frame);
+        return;
+      }
+
+      resetGrid();
+      updateMessages();
+
+      const now = new Date();
+      const cx = Math.floor(cols / 2);
+      const cy = Math.floor(rows / 2);
+      const radius = Math.max(6, Math.min(Math.floor((cols - 12) / 4), Math.floor((rows - 8) / 2)));
+
+      const sec = now.getSeconds() + now.getMilliseconds() / 1000;
+      const minute = now.getMinutes() + sec / 60;
+      const hour = (now.getHours() % 12) + minute / 60;
+
+      const secA = sec / 60 * 2 * Math.PI - Math.PI / 2;
+      const minA = minute / 60 * 2 * Math.PI - Math.PI / 2;
+      const hourA = hour / 12 * 2 * Math.PI - Math.PI / 2;
+
+      const circleColor = pick(LIGHT_TEXT);
+      const minuteColor = pick(LIGHT_TEXT);
+      const hourColor = pick(LIGHT_TEXT);
+
+      const tipX = Math.floor(cx + Math.cos(secA) * radius * 2.1);
+      const tipY = Math.floor(cy + Math.sin(secA) * radius * 1.05);
+      secondTrail.push([tipX, tipY]);
+      while (secondTrail.length > 5) secondTrail.shift();
+
+      updateTriangles(cols, rows, cx, cy, radius);
+
+      for (let y = 0; y < rows; y++) {
+        for (let x = 0; x < cols; x++) {
+          const dx = (x - cx) / 2;
+          const dy = (y - cy);
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          const ang = Math.atan2(dy, dx);
+
+          if (Math.abs(dist - radius) < 0.45) put(y, x, "o", circleColor);
+          if (dist < radius * 0.50 && angleDiff(ang, hourA) < 0.13) put(y, x, "#", hourColor);
+          if (dist < radius * 0.84 && angleDiff(ang, minA) < 0.09) put(y, x, "|", minuteColor);
+          if (dist < radius * 1.08 && angleDiff(ang, secA) < 0.08) put(y, x, pick(["*","+","•","✦","✧","."]), pick(SPARKLE));
+        }
+      }
+
+      for (let i = 0; i < secondTrail.length; i++) {
+        const [tx, ty] = secondTrail[i];
+        for (let dx = -1; dx <= 1; dx++) {
+          put(ty, tx + dx, pick(["·","•",".","⋆"]), ["#ffffff","#f5f5f5","#e5e5e5","#d4d4d4","#c4c4c4"][i] || "#ffffff");
+        }
+      }
+
+      put(cy, cx, "●", "#ff4d4d");
+
+      for (const t of triangles) {
+        put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
+      }
+
+      for (const msg of messages) {
+        if (msg.size === 1) drawText(msg.row, msg.col, msg.text, msg.color);
+        else renderBitmapLines(msg.lines, msg.size, msg.row, msg.col, msg.color);
+      }
+
+      drawText(1, 2, `[m] mute: ${muted ? "ON" : "OFF"}   [q] exit`, STATUS_COLOR);
+
+      if (exitArmed) drawExitScreen();
+      else renderGrid();
+
       requestAnimationFrame(frame);
-      return;
+    } catch (err) {
+      lastError = err;
+      console.error(err);
+      drawErrorOverlay(err);
     }
-
-    resetGrid();
-    updateMessages();
-
-    const now = new Date();
-    const cx = Math.floor(cols / 2);
-    const cy = Math.floor(rows / 2);
-    const radius = Math.max(6, Math.min(Math.floor((cols - 12) / 4), Math.floor((rows - 8) / 2)));
-
-    const sec = now.getSeconds() + now.getMilliseconds() / 1000;
-    const minute = now.getMinutes() + sec / 60;
-    const hour = (now.getHours() % 12) + minute / 60;
-
-    const secA = sec / 60 * 2 * Math.PI - Math.PI / 2;
-    const minA = minute / 60 * 2 * Math.PI - Math.PI / 2;
-    const hourA = hour / 12 * 2 * Math.PI - Math.PI / 2;
-
-    const circleColor = pick(LIGHT_TEXT);
-    const minuteColor = pick(LIGHT_TEXT);
-    const hourColor = pick(LIGHT_TEXT);
-
-    const tipX = Math.floor(cx + Math.cos(secA) * radius * 2.1);
-    const tipY = Math.floor(cy + Math.sin(secA) * radius * 1.05);
-    secondTrail.push([tipX, tipY]);
-    while (secondTrail.length > 5) secondTrail.shift();
-
-    updateTriangles(cols, rows, cx, cy, radius);
-
-    for (let y = 0; y < rows; y++) {
-      for (let x = 0; x < cols; x++) {
-        const dx = (x - cx) / 2;
-        const dy = (y - cy);
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const ang = Math.atan2(dy, dx);
-
-        if (Math.abs(dist - radius) < 0.45) put(y, x, "o", circleColor);
-        if (dist < radius * 0.50 && angleDiff(ang, hourA) < 0.13) put(y, x, "#", hourColor);
-        if (dist < radius * 0.84 && angleDiff(ang, minA) < 0.09) put(y, x, "|", minuteColor);
-        if (dist < radius * 1.08 && angleDiff(ang, secA) < 0.08) put(y, x, pick(["*","+","•","✦","✧","."]), pick(SPARKLE));
-      }
-    }
-
-    for (let i = 0; i < secondTrail.length; i++) {
-      const [tx, ty] = secondTrail[i];
-      for (let dx = -1; dx <= 1; dx++) {
-        put(ty, tx + dx, pick(["·","•",".","⋆"]), ["#ffffff","#f5f5f5","#e5e5e5","#d4d4d4","#c4c4c4"][i] || "#ffffff");
-      }
-    }
-
-    put(cy, cx, "●", "#ff4d4d");
-
-    for (const t of triangles) {
-      put(t.y, t.x, t.glyph, pick(["#ffd166","#f8fafc","#dbeafe","#e9d5ff","#fbcfe8"]));
-    }
-
-    for (const msg of messages) {
-      if (msg.size === 1) drawText(msg.row, msg.col, msg.text, msg.color);
-      else renderBitmapLines(msg.lines, msg.size, msg.row, msg.col, msg.color);
-    }
-
-    drawText(1, 2, `[m] mute: ${muted ? "ON" : "OFF"}   [q] exit`, STATUS_COLOR);
-
-    if (exitArmed) drawExitScreen();
-    else renderGrid();
-
-    requestAnimationFrame(frame);
   }
 
   window.addEventListener("keydown", (e) => {
@@ -618,6 +639,7 @@
 
   window.addEventListener("pointerdown", ensureAudio, { once: true });
 
+  initTriangles();
   requestAnimationFrame(frame);
 })();
 </script>

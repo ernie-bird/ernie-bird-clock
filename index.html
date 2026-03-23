@@ -104,6 +104,7 @@
   let lastCircleBeep = 0;
   let lastGlitterBeep = 0;
   let lastFreezeBeep = 0;
+  let lastHoldChirpAt = 0;
 
   let freezeUntil = 0;
   let frozenClockDate = null;
@@ -300,54 +301,12 @@
     osc.stop(now + duration + 0.01);
   }
 
-  function ensureHoldTone() {
-    if (muted) return;
-    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
-    if (holdOsc) return;
+ function ensureHoldTone() {
+  // continuous hold oscillator intentionally removed
+}
 
-    const now = audioCtx.currentTime;
-
-    holdOsc = audioCtx.createOscillator();
-    holdGain = audioCtx.createGain();
-    holdFilter = audioCtx.createBiquadFilter();
-    holdLfo = audioCtx.createOscillator();
-    holdLfoGain = audioCtx.createGain();
-
-    holdOsc.type = "sine";
-    holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
-
-    holdFilter.type = "bandpass";
-    holdFilter.frequency.setValueAtTime(2600, now);
-    holdFilter.Q.setValueAtTime(1.8, now);
-
-    holdLfo.type = "sine";
-    holdLfo.frequency.setValueAtTime(4.5, now);
-    holdLfoGain.gain.setValueAtTime(0.6, now);
-
-    holdLfo.connect(holdLfoGain);
-    holdLfoGain.connect(holdOsc.frequency);
-
-    holdGain.gain.setValueAtTime(0.0001, now);
-    holdGain.gain.exponentialRampToValueAtTime(0.0012, now + 0.22);
-
-    holdOsc.connect(holdFilter);
-    holdFilter.connect(holdGain);
-    holdGain.connect(masterGain);
-
-    holdOsc.start(now);
-    holdLfo.start(now);
-  }
-
-  function stopHoldTone() {
-    if (!holdOsc || !audioCtx) return;
-    const now = audioCtx.currentTime;
-    try {
-      holdGain.gain.cancelScheduledValues(now);
-      holdGain.gain.setValueAtTime(Math.max(0.0001, holdGain.gain.value), now);
-      holdGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-      holdOsc.stop(now + 0.1);
-      holdLfo.stop(now + 0.1);
-    } catch (_) {}
+ function stopHoldTone() {
+  if (!holdOsc || !audioCtx) {
     holdOsc = null;
     holdGain = null;
     holdFilter = null;
@@ -355,68 +314,31 @@
     holdLfoGain = null;
     holdTargetFreq = 1180;
     holdCurrentFreq = 1180;
+    return;
   }
 
-  function updateHoldTone(nowMs, dtMs) {
-    if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
-      stopHoldTone();
-      return;
-    }
+  const now = audioCtx.currentTime;
+  try {
+    holdGain.gain.cancelScheduledValues(now);
+    holdGain.gain.setValueAtTime(Math.max(0.0001, holdGain.gain.value), now);
+    holdGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+    holdOsc.stop(now + 0.05);
+    if (holdLfo) holdLfo.stop(now + 0.05);
+  } catch (_) {}
 
-    ensureHoldTone();
-    if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
+  holdOsc = null;
+  holdGain = null;
+  holdFilter = null;
+  holdLfo = null;
+  holdLfoGain = null;
+  holdTargetFreq = 1180;
+  holdCurrentFreq = 1180;
+}
 
-    const frozen = isFrozenNow(nowMs);
-    const dragging = pointerIsDragging(nowMs);
-    const heldMs = nowMs - pointerDownAt;
-
-    let baseFreq;
-    let gainTarget;
-    let filterTarget;
-    let lfoFreq;
-    let lfoDepth;
-
-    if (frozen) {
-      baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
-      gainTarget = 0.008;
-      filterTarget = 5200;
-      lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
-      lfoDepth = 60 + 40 * Math.sin(nowMs * 0.009);
-    } else if (dragging) {
-      baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
-      gainTarget = 0.0014;
-      filterTarget = 3000;
-      lfoFreq = 5.3;
-      lfoDepth = 2.5;
-    } else {
-      const climb = Math.min(1, heldMs / 1800);
-      baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
-      gainTarget = 0.0014 + climb * 0.0014;
-      filterTarget = 3000 + climb * 1400;
-      lfoFreq = 6 + climb * 5;
-      lfoDepth = 2.5 + climb * 7;
-    }
-
-    holdTargetFreq = baseFreq;
-    holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.0045);
-
-    const t = audioCtx.currentTime;
-
-    holdOsc.frequency.cancelScheduledValues(t);
-    holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.08);
-
-    holdFilter.frequency.cancelScheduledValues(t);
-    holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.08);
-
-    holdGain.gain.cancelScheduledValues(t);
-    holdGain.gain.setTargetAtTime(gainTarget, t, 0.10);
-
-    holdLfo.frequency.cancelScheduledValues(t);
-    holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.10);
-
-    holdLfoGain.gain.cancelScheduledValues(t);
-    holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.12);
-  }
+ function updateHoldTone(nowMs, dtMs) {
+  // no always-on oscillator; sound is emitted as one-shots only while touching
+  stopHoldTone();
+}
 
   function beepTriangle() {
     const t = performance.now();
@@ -431,6 +353,78 @@
     lastCircleBeep = t;
     playTone(540, 0.05, 0.02, "sine");
   }
+
+  function beepHoldChirp(nowMs) {
+  if (muted) return;
+  if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+  if (!pointerIsDown) return;
+  if (nowMs - lastHoldChirpAt < 70) return;
+
+  lastHoldChirpAt = nowMs;
+
+  const frozen = isFrozenNow(nowMs);
+  const dragging = pointerIsDragging(nowMs);
+  const holding = pointerIsHolding(nowMs);
+  const heldMs = nowMs - pointerDownAt;
+  const holdClimb = Math.min(1, Math.max(0, heldMs) / 1800);
+
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const filter = audioCtx.createBiquadFilter();
+
+  osc.type = "triangle";
+  filter.type = "highpass";
+
+  if (frozen) {
+    osc.frequency.setValueAtTime(2200 + Math.random() * 1200, now);
+    osc.frequency.linearRampToValueAtTime(5200 + Math.random() * 2600, now + 0.045);
+    osc.frequency.linearRampToValueAtTime(3200 + Math.random() * 1800, now + 0.14);
+
+    filter.frequency.setValueAtTime(2200, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.028, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+  } else if (holding) {
+    const startF = 1250 + holdClimb * 260 + Math.random() * 30;
+    const endF = 1700 + holdClimb * 680 + Math.random() * 50;
+
+    osc.frequency.setValueAtTime(startF, now);
+    osc.frequency.linearRampToValueAtTime(endF, now + 0.06);
+
+    filter.frequency.setValueAtTime(1800 + holdClimb * 900, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.006 + holdClimb * 0.003, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+  } else if (dragging) {
+    osc.frequency.setValueAtTime(1350 + Math.random() * 300, now);
+    osc.frequency.linearRampToValueAtTime(2100 + Math.random() * 500, now + 0.05);
+
+    filter.frequency.setValueAtTime(1900, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.010, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+  } else {
+    osc.frequency.setValueAtTime(1400 + Math.random() * 400, now);
+    osc.frequency.linearRampToValueAtTime(2200 + Math.random() * 500, now + 0.05);
+
+    filter.frequency.setValueAtTime(1900, now);
+
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.008, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+  }
+
+  osc.connect(filter);
+  filter.connect(gain);
+  gain.connect(masterGain);
+
+  osc.start(now);
+  osc.stop(now + 0.18);
+}
 
   function beepGlitter() {
     const t = performance.now();
@@ -1343,40 +1337,42 @@
     renderGrid();
   }
 
-  function spawnPointerGlitter(nowMs) {
-    const frozen = isFrozenNow(nowMs);
-    const dragging = pointerIsDragging(nowMs);
-    const holding = pointerIsHolding(nowMs);
+ function spawnPointerGlitter(nowMs) {
+  beepHoldChirp(nowMs);
 
-    if (frozen && pointerIsDown && !freezeBurstTriggered) {
-      triggerFreezeTouchBurst();
-    }
+  const frozen = isFrozenNow(nowMs);
+  const dragging = pointerIsDragging(nowMs);
+  const holding = pointerIsHolding(nowMs);
 
-    if (frozen) {
-      spawnGlitterBurst(pointerX, pointerY, {
-        intensity: 1.0,
-        concentrated: false
-      });
-      return;
-    }
-
-    if (holding) {
-      spawnGlitterBurst(pointerX, pointerY, {
-        intensity: 0.70,
-        concentrated: true
-      });
-    } else if (dragging) {
-      spawnGlitterBurst(pointerX, pointerY, {
-        intensity: 0.42,
-        concentrated: false
-      });
-    } else {
-      spawnGlitterBurst(pointerX, pointerY, {
-        intensity: 0.55,
-        concentrated: true
-      });
-    }
+  if (frozen && pointerIsDown && !freezeBurstTriggered) {
+    triggerFreezeTouchBurst();
   }
+
+  if (frozen) {
+    spawnGlitterBurst(pointerX, pointerY, {
+      intensity: 1.0,
+      concentrated: false
+    });
+    return;
+  }
+
+  if (holding) {
+    spawnGlitterBurst(pointerX, pointerY, {
+      intensity: 0.70,
+      concentrated: true
+    });
+  } else if (dragging) {
+    spawnGlitterBurst(pointerX, pointerY, {
+      intensity: 0.42,
+      concentrated: false
+    });
+  } else {
+    spawnGlitterBurst(pointerX, pointerY, {
+      intensity: 0.55,
+      concentrated: true
+    });
+  }
+}
 
   function frame(now) {
     try {

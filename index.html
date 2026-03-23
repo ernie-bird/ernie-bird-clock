@@ -104,6 +104,7 @@
   let lastCircleBeep = 0;
   let lastGlitterBeep = 0;
   let lastFreezeBeep = 0;
+  let lastHoldChirpAt = 0;
 
   let freezeUntil = 0;
   let frozenClockDate = null;
@@ -301,53 +302,30 @@
   }
 
   function ensureHoldTone() {
-    if (muted) return;
-    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
-    if (holdOsc) return;
-
-    const now = audioCtx.currentTime;
-
-    holdOsc = audioCtx.createOscillator();
-    holdGain = audioCtx.createGain();
-    holdFilter = audioCtx.createBiquadFilter();
-    holdLfo = audioCtx.createOscillator();
-    holdLfoGain = audioCtx.createGain();
-
-    holdOsc.type = "sine";
-    holdOsc.frequency.setValueAtTime(holdCurrentFreq, now);
-
-    holdFilter.type = "bandpass";
-    holdFilter.frequency.setValueAtTime(2600, now);
-    holdFilter.Q.setValueAtTime(1.8, now);
-
-    holdLfo.type = "sine";
-    holdLfo.frequency.setValueAtTime(4.5, now);
-    holdLfoGain.gain.setValueAtTime(0.6, now);
-
-    holdLfo.connect(holdLfoGain);
-    holdLfoGain.connect(holdOsc.frequency);
-
-    holdGain.gain.setValueAtTime(0.0001, now);
-    holdGain.gain.exponentialRampToValueAtTime(0.0012, now + 0.22);
-
-    holdOsc.connect(holdFilter);
-    holdFilter.connect(holdGain);
-    holdGain.connect(masterGain);
-
-    holdOsc.start(now);
-    holdLfo.start(now);
+    // continuous hold oscillator intentionally removed
   }
 
   function stopHoldTone() {
-    if (!holdOsc || !audioCtx) return;
+    if (!holdOsc || !audioCtx) {
+      holdOsc = null;
+      holdGain = null;
+      holdFilter = null;
+      holdLfo = null;
+      holdLfoGain = null;
+      holdTargetFreq = 1180;
+      holdCurrentFreq = 1180;
+      return;
+    }
+
     const now = audioCtx.currentTime;
     try {
       holdGain.gain.cancelScheduledValues(now);
       holdGain.gain.setValueAtTime(Math.max(0.0001, holdGain.gain.value), now);
-      holdGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.08);
-      holdOsc.stop(now + 0.1);
-      holdLfo.stop(now + 0.1);
+      holdGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.04);
+      holdOsc.stop(now + 0.05);
+      if (holdLfo) holdLfo.stop(now + 0.05);
     } catch (_) {}
+
     holdOsc = null;
     holdGain = null;
     holdFilter = null;
@@ -358,64 +336,8 @@
   }
 
   function updateHoldTone(nowMs, dtMs) {
-    if (!pointerIsDown || muted || !audioCtx || audioCtx.state !== "running" || !masterGain) {
-      stopHoldTone();
-      return;
-    }
-
-    ensureHoldTone();
-    if (!holdOsc || !holdGain || !holdFilter || !holdLfo || !holdLfoGain) return;
-
-    const frozen = isFrozenNow(nowMs);
-    const dragging = pointerIsDragging(nowMs);
-    const heldMs = nowMs - pointerDownAt;
-
-    let baseFreq;
-    let gainTarget;
-    let filterTarget;
-    let lfoFreq;
-    let lfoDepth;
-
-    if (frozen) {
-      baseFreq = 1850 + 900 * Math.sin(nowMs * 0.018) + 620 * Math.sin(nowMs * 0.052 + 0.8);
-      gainTarget = 0.008;
-      filterTarget = 5200;
-      lfoFreq = 18 + 8 * Math.sin(nowMs * 0.004);
-      lfoDepth = 60 + 40 * Math.sin(nowMs * 0.009);
-    } else if (dragging) {
-      baseFreq = 1180 + 110 * Math.sin(nowMs * 0.010);
-      gainTarget = 0.0014;
-      filterTarget = 3000;
-      lfoFreq = 5.3;
-      lfoDepth = 2.5;
-    } else {
-      const climb = Math.min(1, heldMs / 1800);
-      baseFreq = 1160 + climb * 760 + 35 * Math.sin(nowMs * 0.009);
-      gainTarget = 0.0014 + climb * 0.0014;
-      filterTarget = 3000 + climb * 1400;
-      lfoFreq = 6 + climb * 5;
-      lfoDepth = 2.5 + climb * 7;
-    }
-
-    holdTargetFreq = baseFreq;
-    holdCurrentFreq += (holdTargetFreq - holdCurrentFreq) * Math.min(1, dtMs * 0.0045);
-
-    const t = audioCtx.currentTime;
-
-    holdOsc.frequency.cancelScheduledValues(t);
-    holdOsc.frequency.setTargetAtTime(Math.max(120, holdCurrentFreq), t, 0.08);
-
-    holdFilter.frequency.cancelScheduledValues(t);
-    holdFilter.frequency.setTargetAtTime(filterTarget, t, 0.08);
-
-    holdGain.gain.cancelScheduledValues(t);
-    holdGain.gain.setTargetAtTime(gainTarget, t, 0.10);
-
-    holdLfo.frequency.cancelScheduledValues(t);
-    holdLfo.frequency.setTargetAtTime(lfoFreq, t, 0.10);
-
-    holdLfoGain.gain.cancelScheduledValues(t);
-    holdLfoGain.gain.setTargetAtTime(lfoDepth, t, 0.12);
+    // no always-on oscillator; sound is emitted as one-shots only while touching
+    stopHoldTone();
   }
 
   function beepTriangle() {
@@ -430,6 +352,78 @@
     if (t - lastCircleBeep < 40) return;
     lastCircleBeep = t;
     playTone(540, 0.05, 0.02, "sine");
+  }
+
+  function beepHoldChirp(nowMs) {
+    if (muted) return;
+    if (!audioCtx || audioCtx.state !== "running" || !masterGain) return;
+    if (!pointerIsDown) return;
+    if (nowMs - lastHoldChirpAt < 70) return;
+
+    lastHoldChirpAt = nowMs;
+
+    const frozen = isFrozenNow(nowMs);
+    const dragging = pointerIsDragging(nowMs);
+    const holding = pointerIsHolding(nowMs);
+    const heldMs = nowMs - pointerDownAt;
+    const holdClimb = Math.min(1, Math.max(0, heldMs) / 1800);
+
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    const filter = audioCtx.createBiquadFilter();
+
+    osc.type = "triangle";
+    filter.type = "highpass";
+
+    if (frozen) {
+      osc.frequency.setValueAtTime(2200 + Math.random() * 1200, now);
+      osc.frequency.linearRampToValueAtTime(5200 + Math.random() * 2600, now + 0.045);
+      osc.frequency.linearRampToValueAtTime(3200 + Math.random() * 1800, now + 0.14);
+
+      filter.frequency.setValueAtTime(2200, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.028, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.18);
+    } else if (holding) {
+      const startF = 1250 + holdClimb * 260 + Math.random() * 30;
+      const endF = 1700 + holdClimb * 680 + Math.random() * 50;
+
+      osc.frequency.setValueAtTime(startF, now);
+      osc.frequency.linearRampToValueAtTime(endF, now + 0.06);
+
+      filter.frequency.setValueAtTime(1800 + holdClimb * 900, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.006 + holdClimb * 0.003, now + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.11);
+    } else if (dragging) {
+      osc.frequency.setValueAtTime(1350 + Math.random() * 300, now);
+      osc.frequency.linearRampToValueAtTime(2100 + Math.random() * 500, now + 0.05);
+
+      filter.frequency.setValueAtTime(1900, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.010, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+    } else {
+      osc.frequency.setValueAtTime(1400 + Math.random() * 400, now);
+      osc.frequency.linearRampToValueAtTime(2200 + Math.random() * 500, now + 0.05);
+
+      filter.frequency.setValueAtTime(1900, now);
+
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(0.008, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10);
+    }
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(masterGain);
+
+    osc.start(now);
+    osc.stop(now + 0.18);
   }
 
   function beepGlitter() {
@@ -564,601 +558,6 @@
       osc.stop(start + 0.36);
       lfo.stop(start + 0.36);
     }
-  }
-
-  const FONT = {
-    "A":["01110","10001","10001","11111","10001","10001","10001"],
-    "B":["11110","10001","10001","11110","10001","10001","11110"],
-    "C":["01111","10000","10000","10000","10000","10000","01111"],
-    "D":["11110","10001","10001","10001","10001","10001","11110"],
-    "E":["11111","10000","10000","11110","10000","10000","11111"],
-    "F":["11111","10000","10000","11110","10000","10000","10000"],
-    "G":["01111","10000","10000","10111","10001","10001","01111"],
-    "H":["10001","10001","10001","11111","10001","10001","10001"],
-    "I":["11111","00100","00100","00100","00100","00100","11111"],
-    "J":["00001","00001","00001","00001","10001","10001","01110"],
-    "K":["10001","10010","10100","11000","10100","10010","10001"],
-    "L":["10000","10000","10000","10000","10000","10000","11111"],
-    "M":["10001","11011","10101","10101","10001","10001","10001"],
-    "N":["10001","11001","10101","10011","10001","10001","10001"],
-    "O":["01110","10001","10001","10001","10001","10001","01110"],
-    "P":["11110","10001","10001","11110","10000","10000","10000"],
-    "Q":["01110","10001","10001","10001","10101","10010","01101"],
-    "R":["11110","10001","10001","11110","10100","10010","10001"],
-    "S":["01111","10000","10000","01110","00001","00001","11110"],
-    "T":["11111","00100","00100","00100","00100","00100","00100"],
-    "U":["10001","10001","10001","10001","10001","10001","01110"],
-    "V":["10001","10001","10001","10001","10001","01010","00100"],
-    "W":["10001","10001","10001","10101","10101","10101","01010"],
-    "X":["10001","10001","01010","00100","01010","10001","10001"],
-    "Y":["10001","10001","01010","00100","00100","00100","00100"],
-    "Z":["11111","00001","00010","00100","01000","10000","11111"],
-    "0":["01110","10001","10011","10101","11001","10001","01110"],
-    "1":["00100","01100","00100","00100","00100","00100","01110"],
-    "2":["01110","10001","00001","00010","00100","01000","11111"],
-    "3":["11110","00001","00001","01110","00001","00001","11110"],
-    "4":["00010","00110","01010","10010","11111","00010","00010"],
-    "5":["11111","10000","10000","11110","00001","00001","11110"],
-    "6":["01110","10000","10000","11110","10001","10001","01110"],
-    "7":["11111","00001","00010","00100","01000","01000","01000"],
-    "8":["01110","10001","10001","01110","10001","10001","01110"],
-    "9":["01110","10001","10001","01111","00001","00001","01110"],
-    "!":["00100","00100","00100","00100","00100","00000","00100"],
-    "?":["01110","10001","00001","00010","00100","00000","00100"],
-    ".":["00000","00000","00000","00000","00000","00000","00100"],
-    ":":["00000","00100","00000","00000","00100","00000","00000"],
-    "'":["00100","00100","00000","00000","00000","00000","00000"],
-    "-":["00000","00000","00000","11111","00000","00000","00000"],
-    " ":["00000","00000","00000","00000","00000","00000","00000"],
-  };
-
-  function sanitizeText(text) {
-    return text.toUpperCase().split("").map(ch => FONT[ch] ? ch : " ").join("");
-  }
-
-  function bitmapLineWidth(text, scale) {
-    const t = sanitizeText(text);
-    if (!t.length) return 0;
-    return t.length * (5 * scale + scale) - scale;
-  }
-
-  function wrapWordsBitmap(text, scale, maxCols) {
-    const words = sanitizeText(text).split(/\s+/).filter(Boolean);
-    if (!words.length) return [""];
-    const lines = [];
-    let cur = words[0];
-    for (let i = 1; i < words.length; i++) {
-      const cand = cur + " " + words[i];
-      if (bitmapLineWidth(cand, scale) <= maxCols) cur = cand;
-      else {
-        lines.push(cur);
-        cur = words[i];
-      }
-    }
-    lines.push(cur);
-    return lines;
-  }
-
-  function bitmapBlockDims(lines, scale) {
-    const widths = lines.map(line => bitmapLineWidth(line, scale));
-    return {
-      w: widths.length ? Math.max(...widths) : 0,
-      h: lines.length * (7 * scale) + Math.max(0, lines.length - 1) * scale
-    };
-  }
-
-  function scalesThatFitWrapped(text, maxW, maxH) {
-    const fits = [];
-    for (let s = 2; s <= 5; s++) {
-      const lines = wrapWordsBitmap(text, s, maxW);
-      const dims = bitmapBlockDims(lines, s);
-      if (dims.w <= maxW && dims.h <= maxH) fits.push({ size: s, lines, ...dims });
-    }
-    return fits;
-  }
-
-  function chooseMessageSize(text) {
-    const maxW = cols - 4;
-    const maxH = rows - 4;
-    const fits = scalesThatFitWrapped(text, maxW, maxH);
-
-    const area = cols * rows;
-    let weights;
-    if (area < 3500) weights = {1:58,2:22,3:12,4:6,5:2};
-    else if (area < 7000) weights = {1:38,2:24,3:20,4:12,5:6};
-    else weights = {1:28,2:22,3:22,4:16,5:12};
-
-    const available = [1, ...fits.map(f => f.size)];
-    const bag = [];
-    for (const s of available) {
-      for (let i = 0; i < (weights[s] || 1); i++) bag.push(s);
-    }
-
-    const chosen = pick(bag);
-    if (chosen === 1) return { size: 1 };
-    return fits.find(f => f.size === chosen) || { size: 1 };
-  }
-
-  function renderBitmapLines(lines, scale, row, col, color) {
-    for (let li = 0; li < lines.length; li++) {
-      const line = sanitizeText(lines[li]);
-      let x0 = col;
-      const y0 = row + li * (7 * scale + scale);
-
-      for (const ch of line) {
-        const glyph = FONT[ch] || FONT[" "];
-        for (let gy = 0; gy < 7; gy++) {
-          for (let gx = 0; gx < 5; gx++) {
-            if (glyph[gy][gx] === "1") {
-              for (let sy = 0; sy < scale; sy++) {
-                for (let sx = 0; sx < scale; sx++) {
-                  put(y0 + gy * scale + sy, x0 + gx * scale + sx, "█", color);
-                }
-              }
-            }
-          }
-        }
-        x0 += 5 * scale + scale;
-      }
-    }
-  }
-
-  let gridChars = [];
-  let gridColors = [];
-
-  function resetGrid() {
-    gridChars = Array.from({ length: rows }, () => Array(cols).fill(" "));
-    gridColors = Array.from({ length: rows }, () => Array(cols).fill(LIGHT_TEXT[0]));
-  }
-
-  function put(r, c, ch, color) {
-    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
-    gridChars[r][c] = ch;
-    gridColors[r][c] = color;
-  }
-
-  function drawText(r, c, text, color) {
-    for (let i = 0; i < text.length; i++) put(r, c + i, text[i], color);
-  }
-
-  function renderGrid() {
-    ctx.fillStyle = BACKGROUND;
-    ctx.fillRect(0, 0, W, H);
-    ctx.font = `${Math.floor(cellH * 0.92)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-    ctx.textBaseline = "top";
-
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const ch = gridChars[r][c];
-        if (ch === " ") continue;
-        ctx.fillStyle = gridColors[r][c];
-        ctx.fillText(ch, c * cellW, r * cellH);
-      }
-    }
-  }
-
-  function boxOverlap(a, b) {
-    return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
-  }
-
-  function buildBox(row, col, w, h, padding = 1) {
-    return {
-      left: col - padding,
-      right: col + w - 1 + padding,
-      top: row - padding,
-      bottom: row + h - 1 + padding
-    };
-  }
-
-  function canSpawnAnotherMessage() {
-    if (messages.length >= MAX_VISIBLE_MESSAGES) return false;
-    if (messages.length === 0) return true;
-    if (messages.length === 1) return Math.random() > PREFER_SINGLE_MESSAGE_CHANCE;
-    return false;
-  }
-
-  function spawnMessage(kind) {
-    const nowMs = performance.now();
-    if (!canSpawnAnotherMessage()) return;
-
-    const text = pickMessageWithCooldown(kind === "blue" ? blueOptions : wakeOptions, nowMs);
-    const color = lightMessageColor(kind);
-    const chosen = chooseMessageSize(text);
-
-    const nonOverlapCandidates = [];
-    const overlapCandidates = [];
-
-    if (chosen.size === 1) {
-      const w = text.length, h = 1;
-      for (let i = 0; i < 20; i++) {
-        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - 3));
-        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        const box = buildBox(row, col, w, h, 1);
-        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
-        const candidate = { row, col, box, lines: null, size: 1, overlapping };
-        if (!overlapping.length) nonOverlapCandidates.push(candidate);
-        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
-      }
-    } else {
-      const { size, lines, w, h } = chosen;
-      for (let i = 0; i < 20; i++) {
-        const row = 2 + Math.floor(Math.random() * Math.max(1, rows - h - 2));
-        const col = 2 + Math.floor(Math.random() * Math.max(1, cols - w - 2));
-        const box = buildBox(row, col, w, h, Math.max(1, Math.floor(size / 2)));
-        const overlapping = messages.filter(msg => boxOverlap(box, msg.box));
-        const candidate = { row, col, box, lines, size, overlapping };
-        if (!overlapping.length) nonOverlapCandidates.push(candidate);
-        else if (messages.length === 1 && overlapping.length === 1) overlapCandidates.push(candidate);
-      }
-    }
-
-    const chosenCandidate = nonOverlapCandidates.length
-      ? pick(nonOverlapCandidates)
-      : overlapCandidates.length
-        ? pick(overlapCandidates)
-        : null;
-
-    if (!chosenCandidate) return;
-
-    const msg = {
-      kind,
-      text,
-      color,
-      size: chosenCandidate.size,
-      lines: chosenCandidate.lines,
-      row: chosenCandidate.row,
-      col: chosenCandidate.col,
-      box: chosenCandidate.box,
-      ttl: kind === "blue" ? 16 + Math.floor(Math.random() * 10) : 18 + Math.floor(Math.random() * 12),
-      overlapExpireAt: null,
-      createdAt: nowMs
-    };
-
-    if (chosenCandidate.overlapping.length) {
-      msg.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
-      for (const other of chosenCandidate.overlapping) {
-        other.overlapExpireAt = nowMs + MAX_OVERLAP_MS;
-      }
-    }
-
-    messages.push(msg);
-  }
-
-  function updateMessagesTick() {
-    const nowMs = performance.now();
-
-    for (const [key, until] of messageCooldowns.entries()) {
-      if (until <= nowMs) messageCooldowns.delete(key);
-    }
-
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      msg.ttl--;
-      if ((msg.overlapExpireAt && nowMs >= msg.overlapExpireAt) || msg.ttl <= 0) {
-        messages.splice(i, 1);
-      }
-    }
-
-    if (!exitOverlay) {
-      if (Math.random() < 0.017) spawnMessage("blue");
-      if (Math.random() < 0.022) spawnMessage("wake");
-    }
-  }
-
-  function angleDiff(a, b) {
-    let d = a - b;
-    while (d <= -Math.PI) d += 2 * Math.PI;
-    while (d > Math.PI) d -= 2 * Math.PI;
-    return Math.abs(d);
-  }
-
-  function chooseExitScale(text, preferBig) {
-    const fits = scalesThatFitWrapped(text, cols - 4, Math.max(7, Math.floor(rows / 2)));
-    if (!fits.length) return { size: 1, lines: [text], w: text.length, h: 1 };
-
-    if (preferBig) {
-      const bag = [];
-      for (const f of fits) {
-        for (let i = 0; i < f.size * f.size; i++) bag.push(f);
-      }
-      return pick(bag);
-    }
-    return pick(fits);
-  }
-
-  function drawExitOverlay() {
-    resetGrid();
-
-    const warning = "WARNING: IT IS IMPOSSIBLE TO EXIT TIME";
-    const middleLine = "TIME DOES NOT STOP FOR YOU";
-    const countdownText = `RETURNING TO CLOCK IN ${Math.ceil(exitCountdown)}`;
-
-    const w1 = chooseExitScale(warning, true);
-    const wMid = chooseExitScale(middleLine, false);
-    const w2 = chooseExitScale(countdownText, false);
-
-    const totalH = w1.h + 1 + wMid.h + 2 + w2.h;
-    const r1 = Math.max(1, Math.floor((rows - totalH) / 2));
-    const c1 = Math.max(1, Math.floor((cols - w1.w) / 2));
-
-    const rMid = r1 + w1.h + 1;
-    const cMid = Math.max(1, Math.floor((cols - wMid.w) / 2));
-
-    const r2 = rMid + wMid.h + 2;
-    const c2 = Math.max(1, Math.floor((cols - w2.w) / 2));
-
-    if (w1.size === 1) drawText(r1, c1, warning, "#ff5f5f");
-    else renderBitmapLines(w1.lines, w1.size, r1, c1, "#ff5f5f");
-
-    if (wMid.size === 1) drawText(rMid, cMid, middleLine, "#d7dde8");
-    else renderBitmapLines(wMid.lines, wMid.size, rMid, cMid, "#d7dde8");
-
-    if (w2.size === 1) drawText(r2, c2, countdownText, "#ffffff");
-    else renderBitmapLines(w2.lines, w2.size, r2, c2, "#ffffff");
-
-    renderGrid();
-  }
-
-  function snapGlitterX(x) {
-    return Math.round(x / GLITTER_CELL_W) * GLITTER_CELL_W;
-  }
-
-  function snapGlitterY(y) {
-    return Math.round(y / GLITTER_CELL_H) * GLITTER_CELL_H;
-  }
-
-  function renderGlitter() {
-    if (!glitterParticles.length) return;
-
-    ctx.save();
-    ctx.textBaseline = "top";
-    ctx.font = `${Math.floor(GLITTER_CELL_H * 0.95)}px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace`;
-
-    const nowMs = performance.now();
-    const t = nowMs * 0.01;
-    const burstStrength = currentFreezeBurstStrength(nowMs);
-
-    for (const p of glitterParticles) {
-      const lifeRatio = Math.max(0, Math.min(1, p.life / p.maxLife));
-
-      let alpha;
-      if (lifeRatio > 0.72) alpha = 1.0;
-      else if (lifeRatio > 0.42) alpha = 0.82;
-      else alpha = 0.56;
-
-      const blink = p.bursty
-        ? 0.70 + 0.30 * Math.sin(t * 1.8 + p.blinkOffset)
-        : 0.86 + 0.14 * Math.sin(t + p.blinkOffset);
-
-      ctx.globalAlpha = Math.min(1, alpha * blink * (1 + burstStrength * 0.9));
-      ctx.fillStyle = burstStrength > 0.05 && p.bursty ? pick(FREEZE_BURST_COLORS) : p.color;
-      ctx.fillText(p.glyph, p.gx, p.gy);
-
-      if (lifeRatio > 0.50 && Math.random() < (0.18 + burstStrength * 0.45)) {
-        ctx.globalAlpha = Math.min(1, alpha * (0.30 + burstStrength * 0.45));
-        ctx.fillText(pick([".", "·", ":", "+", "*"]), p.gx - GLITTER_CELL_W, p.gy);
-      }
-
-      if (lifeRatio > 0.50 && Math.random() < (0.18 + burstStrength * 0.45)) {
-        ctx.globalAlpha = Math.min(1, alpha * (0.30 + burstStrength * 0.45));
-        ctx.fillText(pick([".", "·", ":", "+", "*"]), p.gx + GLITTER_CELL_W, p.gy);
-      }
-
-      if (burstStrength > 0.08 && p.bursty && Math.random() < 0.38) {
-        ctx.globalAlpha = Math.min(1, alpha * 0.45 * burstStrength);
-        ctx.fillText(pick(["✦", "✧", "✹", "✺", "❋", "※", "◉"]), p.gx, p.gy - GLITTER_CELL_H);
-      }
-
-      if (burstStrength > 0.08 && p.bursty && Math.random() < 0.34) {
-        ctx.globalAlpha = Math.min(1, alpha * 0.40 * burstStrength);
-        ctx.fillText(pick(["✶", "✷", "◌", "◍", "+"]), p.gx, p.gy + GLITTER_CELL_H);
-      }
-    }
-
-    ctx.restore();
-    ctx.globalAlpha = 1;
-  }
-
-  function drawErrorOverlay(err) {
-    ctx.fillStyle = BACKGROUND;
-    ctx.fillRect(0, 0, W, H);
-    ctx.fillStyle = "#ff6b6b";
-    ctx.font = "20px ui-monospace, monospace";
-    ctx.fillText("Clock error:", 20, 20);
-    ctx.fillStyle = "#ffffff";
-    ctx.font = "16px ui-monospace, monospace";
-    const lines = String(err && err.stack ? err.stack : err).split("\n");
-    for (let i = 0; i < lines.length; i++) {
-      ctx.fillText(lines[i], 20, 55 + i * 20);
-    }
-  }
-
-  function resize() {
-    DPR = Math.max(1, window.devicePixelRatio || 1);
-    W = Math.floor(window.innerWidth);
-    H = Math.floor(window.innerHeight);
-
-    canvas.width = Math.floor(W * DPR);
-    canvas.height = Math.floor(H * DPR);
-    canvas.style.width = W + "px";
-    canvas.style.height = H + "px";
-    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-
-    const preferredCols = 110;
-    cellW = Math.max(8, Math.floor(W / preferredCols));
-    cellH = Math.max(14, Math.floor(cellW * 1.65));
-    cols = Math.max(50, Math.floor(W / cellW));
-    rows = Math.max(24, Math.floor(H / cellH));
-
-    GLITTER_CELL_W = Math.max(4, Math.floor(cellW * 0.55));
-    GLITTER_CELL_H = Math.max(6, Math.floor(cellH * 0.55));
-
-    resetGrid();
-  }
-
-  window.addEventListener("resize", resize);
-  resize();
-
-  function initTriangles() {
-    triangles.length = 0;
-    for (let i = 0; i < 16; i++) {
-      triangles.push({
-        x: Math.floor(Math.random() * cols),
-        y: Math.floor(Math.random() * rows),
-        vx: [-1, 0, 1][Math.floor(Math.random() * 3)],
-        vy: [-1, 0, 1][Math.floor(Math.random() * 3)],
-        glyph: pick(["▲", "△", "▴", "▵"]),
-        onRing: false
-      });
-    }
-  }
-
-  function updateTriangles(w, h, cx, cy, radiusPx) {
-    for (const t of triangles) {
-      if (Math.random() < 0.22) {
-        t.vx = [-1, 0, 1][Math.floor(Math.random() * 3)];
-        t.vy = [-1, 0, 1][Math.floor(Math.random() * 3)];
-      }
-
-      t.x += t.vx;
-      t.y += t.vy;
-
-      if (t.x < 0) { t.x = 0; t.vx = 1; }
-      if (t.x >= w) { t.x = w - 1; t.vx = -1; }
-      if (t.y < 0) { t.y = 0; t.vy = 1; }
-      if (t.y >= h) { t.y = h - 1; t.vy = -1; }
-    }
-
-    for (let i = 0; i < triangles.length; i++) {
-      for (let j = i + 1; j < triangles.length; j++) {
-        const a = triangles[i], b = triangles[j];
-        if (Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1) {
-          a.vx = a.vx ? -a.vx : (Math.random() < 0.5 ? -1 : 1);
-          a.vy = a.vy ? -a.vy : (Math.random() < 0.5 ? -1 : 1);
-          b.vx = b.vx ? -b.vx : (Math.random() < 0.5 ? -1 : 1);
-          b.vy = b.vy ? -b.vy : (Math.random() < 0.5 ? -1 : 1);
-          beepTriangle();
-        }
-      }
-    }
-
-    for (const t of triangles) {
-      const dxPx = (t.x - cx) * cellW;
-      const dyPx = (t.y - cy) * cellH * VISUAL_Y_SCALE;
-      const distPx = Math.sqrt(dxPx * dxPx + dyPx * dyPx);
-      const onRingNow = Math.abs(distPx - radiusPx) < Math.max(cellW, cellH) * 0.75;
-
-      if (onRingNow && !t.onRing) {
-        beepCircle();
-        const ang = Math.atan2(dyPx, dxPx || 0.0001);
-        t.vx = Math.round(Math.cos(ang) * 2) || (Math.random() < 0.5 ? -1 : 1);
-        t.vy = Math.round(Math.sin(ang) * 1) || (Math.random() < 0.5 ? -1 : 1);
-      }
-      t.onRing = onRingNow;
-    }
-  }
-
-  const blueOptions = [
-    "NO SIGNAL", "PHASE ISSUE", "CLOCK DESYNC",
-    "TIME ERROR", "WRONG SECOND",
-    "DANGEROUS FREQUENCY", "PARASITIC TICK",
-    "THE PORTAL IS OPEN", "CHRONO BLEED", "INITIALIZING CLOUDS", "WRONG DECISION", "THIS CLOCK WON'T RUN MUCH LONGER",
-    "YOU'RE WASTING TIME", "TIME NOT FOUND", "STOP!", "GET HELP", "THIS ISN'T RIGHT"
-  ];
-
-  const wakeOptions = [
-    "WAKE UP!", "WAKE UP NOW!", "THIS IS NOT REAL", "LOOK CLOSER", "DO YOU SEE IT?",
-    "DON'T TRUST YOURSELF", "YOU ARE DREAMING", "STAY AWAKE", "CALL YOUR MOM",
-    "TIME IS WRONG", "YOU SEE IT TOO",
-    "SNAP OUT", "LOOK AWAY", "DON'T SLEEP", "YOU'RE DRIFTING",
-    "IT'S STILL MORNING", "OBSERVER DETECTED", "THIS IS A SIGN",
-    "ARE YOU AWAKE?", "WHERE'S THE EXIT?", "THE CLOCK KNOWS", "STILL DREAMING?",
-    "COME BACK", "YOU'RE NOT BLINKING", "BLINK AGAIN",
-    "WHO TOLD YOU THIS WAS REAL?",
-    "YOU HAVE BEEN HERE BEFORE", "THIS ROOM REMEMBERS YOU",
-    "THE SECOND HAND IS WATCHING YOU", "WHAT TIME IS IT?",
-    "IF THIS ISN'T REAL",
-    "SOMETHING IS AWAKE BEHIND THE CLOCK", "YOUR MEMORY HAS GAPS",
-    "YOU ARE NOT LOOKING AT A CLOCK",
-    "STOP TRUSTING HIM",
-    "SOMEONE ELSE IS SEEING THIS WITH YOU", "YOU ONLY THINK YOU WOKE UP",
-    "COUNT BACKWARDS UNTIL YOU CAN'T", "THIS HAS HAPPENED MANY TIMES",
-    "THERE IS NO OUTSIDE",
-    "IT ONLY MOVES WHEN YOU BLINK", "THAT SOUND IS NOT FROM THE CLOCK", "YOU'RE NOT HEARING ANYTHING",
-    "YOU ARE ONE SECOND BEHIND YOURSELF", "YOUR REFLECTION ARRIVED FIRST", "YOU HAVE ENEMIES YOU'RE UNAWARE OF",
-    "CAN YOU HEAR THE SCREAMING", "YOU SHOULD'VE DONE THIS", "YOU SHOULD'VE QUIT WHEN THE JOB MARKET WAS GOOD",
-    "PANCE PONY IS A REAL PERSON WHO WRITES BROADWAY MUSICALS", "THEY'RE TIRED OF YOU",
-    "HAVE YOU DONE ALL YOU COULD?", "90% OF EVERYTHING PEOPLE SAY IS BULLSH*T", "AH, TO BE 25 AGAIN",
-    "HAPPINESS WILL PASS", "SUFFERING IS A CHOICE", "USSR STILL EXISTS...", "ALIENS ARE NOT IMPRESSED BY US",
-    "YOU HAD TOO MUCH WINE", "TIME TO THINK ABOUT REGRETS", "IF YOU DON'T RUIN IT, SOMEONE ELSE WILL",
-    "JUST BECAUSE YOU'RE NOT A PSYCHOPATH, DOESN'T MEAN YOU'RE A GOOD PERSON", "HAVE YOU READ DOSTOYEVSKY?",
-    "SLAVOJ ŽIŽEK IS YOUR ONLY HOPE", "YOUR THERAPIST IS RIPPING YOU OFF", "ВІЙНА ЗАКІНЧИТЬСЯ ЧЕРЕЗ ДВА [ДНІ/ТИЖНІ/РОКИ/ДЕСЯТИЛІТТЯ/СТОЛІТТЯ]",
-    "YOU COULD'VE DONE MORE", "THEY'RE WATCHING", "YOUR BEST FRIEND IS HIDING SOMETHING FROM YOU", "HOW LONG UNTIL THEY BETRAY YOU?",
-    "DEPRESSION IS THE BYPRODUCT OF WANTING"
-  ];
-
-  function spawnGlitterBurst(px, py, opts = {}) {
-    const {
-      intensity = 1,
-      concentrated = false,
-      explosive = false
-    } = opts;
-
-    const sx = snapGlitterX(px);
-    const sy = snapGlitterY(py);
-
-    const count = explosive
-      ? Math.floor(420 + Math.random() * 420 * intensity)
-      : concentrated
-        ? Math.floor(10 + Math.random() * 8 * intensity)
-        : Math.floor(16 + Math.random() * 14 * intensity);
-
-    for (let i = 0; i < count; i++) {
-      const ang = Math.random() * Math.PI * 2;
-
-      let speedMin, speedMax, driftOffset, maxLife, colorSet, glyphs;
-      if (explosive) {
-        speedMin = 0.35;
-        speedMax = 2.2;
-        driftOffset = 2.1;
-        maxLife = 8.0 + Math.random() * 7.0;
-        colorSet = FREEZE_BURST_COLORS;
-        glyphs = FREEZE_BURST_GLYPHS;
-      } else if (concentrated) {
-        speedMin = 0.03;
-        speedMax = 0.28;
-        driftOffset = 0.10;
-        maxLife = 1.4 + Math.random() * 1.6;
-        colorSet = ["#ffffff", "#fff8cc", "#fde68a", "#dbeafe"];
-        glyphs = [".", ":", "·", "•", "+"];
-      } else {
-        speedMin = 0.18;
-        speedMax = 1.1;
-        driftOffset = 0.28;
-        maxLife = 0.95 + Math.random() * 1.35;
-        colorSet = ["#ffffff", "#f8fafc", "#fde68a", "#fbcfe8", "#dbeafe", "#e9d5ff", "#fff8cc"];
-        glyphs = [".", ":", "+", "*", "·", "•", "░", "▒", "✦", "✧"];
-      }
-
-      const speed = speedMin + Math.random() * speedMax;
-      glitterParticles.push({
-        x: sx + (Math.random() - 0.5) * GLITTER_CELL_W * driftOffset,
-        y: sy + (Math.random() - 0.5) * GLITTER_CELL_H * driftOffset,
-        gx: sx,
-        gy: sy,
-        vx: Math.cos(ang) * speed,
-        vy: Math.sin(ang) * speed,
-        life: maxLife,
-        maxLife,
-        glyph: pick(glyphs),
-        color: pick(colorSet),
-        blinkOffset: Math.random() * Math.PI * 2,
-        bursty: explosive,
-        bounce: explosive
-      });
-    }
-
-    beepGlitter();
   }
 
   function triggerFreezeTouchBurst() {
@@ -1344,6 +743,8 @@
   }
 
   function spawnPointerGlitter(nowMs) {
+    beepHoldChirp(nowMs);
+
     const frozen = isFrozenNow(nowMs);
     const dragging = pointerIsDragging(nowMs);
     const holding = pointerIsHolding(nowMs);
